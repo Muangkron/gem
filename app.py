@@ -57,7 +57,7 @@ if uploaded_file is not None:
             with st.spinner("Gemini AI กำลังวิเคราะห์แนวเกลียวตาสับปะรด..."):
                 try:
                     genai.configure(api_key=api_key)
-                    model = genai.GenerativeModel("gemini-2.0-flash")
+                    model = genai.GenerativeModel("gemini-3.6-flash")
 
                     prompt = """
                     คุณคือระบบผู้เชี่ยวชาญด้านการวิเคราะห์ผลไม้ 
