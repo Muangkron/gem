@@ -33,7 +33,7 @@ api_key = st.sidebar.text_input(
 
 model_choice = st.sidebar.selectbox(
     "เลือกเวอร์ชันโมเดล Gemini",
-    ["gemini-3.6flash", "gemini-3.6-pro"],
+    ["gemini-3.6-flash", "gemini-3.6-pro"],
     index=0,
     help="2.5-pro จะมีความแม่นยำทางมิติภาพสูงกว่า แต่ Flash จะประมวลผลเร็วกว่า",
 )
