@@ -179,10 +179,7 @@ def analyze_with_gemini(pil_img, theta_val, api_key):
 
     # กำหนด gemini-3.6-flash เป็นอันดับแรก
     candidate_models = [
-        "gemini-3.6-flash",
-        "gemini-3.5-flash",
-        "gemini-2.5-flash",
-        "gemini-1.5-flash",
+        "gemini-3.6-flash"
     ]
 
     last_error = None
