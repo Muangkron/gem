@@ -146,7 +146,8 @@ def draw_visual_overlay(pil_img, centroids, slope, intercept, phi_deg, theta_deg
     if slope is not None and intercept is not None:
         draw.line([(x_min, mean_y), (x_max, mean_y)], fill="#FF0000", width=4)
         y1, y2 = slope * x_min + intercept, slope * x_max + intercept
-        draw.line([(x_min, int(y1)), (x_max, int(y2)], fill="#FF0000", width=4)
+        # แก้ไขจุดที่ตกวงเล็บเรียบร้อยแล้ว
+        draw.line([(x_min, int(y1)), (x_max, int(y2))], fill="#FF0000", width=4)
 
         text_info = f"Spiral Angle (Theta) = {theta_deg:.1f} deg"
         draw.text((max(10, x_min), max(10, int(mean_y) - 45)), text_info, fill="#FFFF00")
@@ -159,7 +160,7 @@ def analyze_with_gemini(pil_img, theta_val, api_key):
 
     genai.configure(api_key=api_key)
 
-    # 1. ดึงรายชื่อโมเดลทั้งหมดที่ API Key นี้มีสิทธิ์ใช้และรองรับ generateContent
+    # ดึงรายชื่อโมเดลที่ใช้ได้จริงจาก API Key
     available_models = [
         m.name for m in genai.list_models()
         if "generateContent" in m.supported_generation_methods
@@ -168,7 +169,6 @@ def analyze_with_gemini(pil_img, theta_val, api_key):
     if not available_models:
         raise ValueError("ไม่พบโมเดล Gemini ที่รองรับสำหรับ API Key นี้ กรุณาตรวจสอบ API Key ใน Google AI Studio")
 
-    # 2. เลือกรุ่นที่ดีที่สุดจากที่มีอยู่จริงในระบบ
     selected_model_name = None
     preferred_keywords = ["flash", "pro", "gemini"]
     
