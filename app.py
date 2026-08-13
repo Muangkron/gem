@@ -1,12 +1,10 @@
 import math
 import os
-import time
 import cv2
 import google.generativeai as genai
 import numpy as np
 import PIL.Image
 import PIL.ImageDraw
-import PIL.ImageFont
 import streamlit as st
 from ultralytics import YOLO
 
@@ -20,7 +18,7 @@ st.set_page_config(
 )
 
 st.title("🍍 ระบบประเมินความหวานสับปะรด (Local YOLO + Spiral Math + Gemini)")
-st.caption("ระบบประมวลผล: YOLO Eye Detection ➔ Duplicate Filtering ➔ Spiral Vector Matching ➔ Fast Gemini Vision")
+st.caption("ระบบประมวลผล: YOLO Eye Detection ➔ Duplicate Filtering ➔ Spiral Vector Matching ➔ Gemini Vision")
 
 # -----------------------------------------------------------------------------
 # 2. Sidebar Settings
@@ -28,25 +26,14 @@ st.caption("ระบบประมวลผล: YOLO Eye Detection ➔ Duplica
 api_key_secret = st.secrets.get("GEMINI_API_KEY", "")
 
 with st.sidebar:
-    st.header("🔑 ตั้งค่า API Key & Model")
+    st.header("🔑 ตั้งค่า API Key")
     user_gemini_key = st.text_input(
         "Gemini API Key:",
         value=api_key_secret,
         type="password",
-        help="นำ API Key จาก Google AI Studio มาวางตรงนี้",
+        help="นำ API Key ใหม่จาก Google AI Studio มาวางที่นี่",
     )
     GEMINI_KEY = user_gemini_key if user_gemini_key else api_key_secret
-
-    # แก้ไขชื่อ Model Identifier ให้มี prefix 'models/' ป้องกัน Error 404
-    selected_model_option = st.selectbox(
-        "เลือกรุ่น Gemini Model:",
-        options=[
-            "models/gemini-1.5-flash",
-            "models/gemini-2.0-flash",
-            "models/gemini-1.5-pro",
-        ],
-        index=0,
-    )
 
     st.markdown("---")
     st.header("⚙️ ปรับแต่งระบบวัดเกลียว")
@@ -66,7 +53,7 @@ def load_yolo_model(model_path="best.pt"):
     return YOLO(model_path)
 
 # -----------------------------------------------------------------------------
-# 4. Core Helper Functions
+# 4. Helper Functions
 # -----------------------------------------------------------------------------
 def detect_and_filter_eyes(image_path, model, img_w, img_h, ratio=2.5):
     results = model(image_path)
@@ -166,18 +153,15 @@ def draw_visual_overlay(pil_img, centroids, slope, intercept, phi_deg, theta_deg
 
     return img_copy
 
-def analyze_with_gemini(pil_img, theta_val, api_key, model_name):
-    # ย่อขนาดรูปเพื่อให้ประมวลผลเร็วขึ้น
+def analyze_with_gemini(pil_img, theta_val, api_key):
+    # ปรับภาพให้เล็กลงเพื่อให้ส่งผ่าน API ได้รวดเร็วที่สุด
     fast_img = pil_img.copy()
     fast_img.thumbnail((800, 800))
 
     genai.configure(api_key=api_key)
     
-    # หากระบุชื่อโดยไม่มี 'models/' ให้เติมอัตโนมัติ
-    if not model_name.startswith("models/"):
-        model_name = f"models/{model_name}"
-
-    model = genai.GenerativeModel(model_name)
+    # ใช้โมเดล gemini-1.5-flash แบบมาตรฐานโดยตรง
+    model = genai.GenerativeModel("gemini-1.5-flash")
 
     prompt = f"""
     คุณเป็นระบบวิเคราะห์ทางชีววิทยาและพฤกษศาสตร์สับปะรด
@@ -242,9 +226,9 @@ with col2:
                 overlay_img = draw_visual_overlay(image, centroids, slope, intercept, phi, theta)
                 st.image(overlay_img, caption=f"มุมเกลียวสับปะรด θ = {theta:.1f}°", use_container_width=True)
 
-                with st.spinner(f"กำลังส่งข้อมูลให้ Gemini (`{selected_model_option}`) วิเคราะห์..."):
+                with st.spinner("กำลังส่งข้อมูลให้ Gemini วิเคราะห์..."):
                     try:
-                        gemini_result = analyze_with_gemini(image, theta, GEMINI_KEY, selected_model_option)
+                        gemini_result = analyze_with_gemini(image, theta, GEMINI_KEY)
                         st.markdown("### 🤖 ผลการวิเคราะห์จาก Gemini")
                         st.write(gemini_result)
                     except Exception as e:
