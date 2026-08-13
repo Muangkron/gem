@@ -1,7 +1,8 @@
 import math
 import os
+import time
 import cv2
-from google import genai
+import google.generativeai as genai
 import numpy as np
 import PIL.Image
 import PIL.ImageDraw
@@ -19,9 +20,6 @@ st.set_page_config(
 )
 
 st.title("🍍 ระบบประเมินความหวานสับปะรด (Local YOLO + Spiral Math + Gemini)")
-st.caption(
-    "ระบบประมวลผล: YOLO Eye Detection ➔ Duplicate Filtering ➔ Spiral Neighbor Vector Matching ➔ Gemini Vision"
-)
 
 # -----------------------------------------------------------------------------
 # 2. Sidebar Settings
@@ -38,11 +36,11 @@ with st.sidebar:
     )
     GEMINI_KEY = user_gemini_key if user_gemini_key else api_key_secret
 
-    # ช่องระบุชื่อโมเดล Gemini (ตั้งค่าเริ่มต้นเป็น gemini-3.6-flash หรือพิมพ์แก้เองได้)
-    gemini_model_name = st.text_input(
-        "ระบุชื่อโมเดล Gemini:",
-        value="gemini-3.6-flash",
-        help="เช่น gemini-3.6-flash, gemini-2.5-flash หรือรุ่นอื่นๆ ที่เปิดใช้งานใน API ของคุณ",
+    # ใช้โมเดลมาตรฐาน gemini-1.5-flash
+    gemini_model_name = st.selectbox(
+        "รุ่น Gemini Model:",
+        options=["gemini-1.5-flash", "gemini-1.5-pro"],
+        index=0,
     )
 
     st.markdown("---")
@@ -55,25 +53,12 @@ with st.sidebar:
         step=0.5,
     )
 
-    st.markdown("---")
-    st.header("📌 เกณฑ์แบบจำลองสับปะรด")
-    st.markdown("""
-    **Model 5-8-13:**
-    - ตาขนาดใหญ่ ร่องตาห่าง
-    - มุมเกลียวอุดมคติ $\\theta_0 = 155^\\circ$
-    
-    **Model 8-13-21:**
-    - ตาขนาดเล็ก ถี่ อัดแน่น
-    - มุมเกลียวอุดมคติ $\\theta_0 = 136^\\circ$
-    """)
-
 
 # -----------------------------------------------------------------------------
 # 3. Load Local YOLO Model
 # -----------------------------------------------------------------------------
 @st.cache_resource
 def load_yolo_model(model_path="best.pt"):
-    """โหลดโมเดล YOLO จากไฟล์ใน Repo"""
     return YOLO(model_path)
 
 
@@ -81,7 +66,6 @@ def load_yolo_model(model_path="best.pt"):
 # 4. Core Helper Functions
 # -----------------------------------------------------------------------------
 def detect_and_filter_eyes(image_path, model, img_w, img_h, ratio=2.5):
-    """ตรวจจับพิกัดตา และตัดจุดซ้ำทิ้ง"""
     results = model(image_path)
     raw_centroids = []
 
@@ -111,130 +95,80 @@ def detect_and_filter_eyes(image_path, model, img_w, img_h, ratio=2.5):
 
 
 def calculate_accurate_spiral_angle(centroids, img_w, img_h):
-    """
-    คำนวณมุมเกลียวสับปะรด (Top-Left -> Bottom-Right) อย่างแม่นยำ
-    โดยหาความชันระหว่างตาคู่ข้างเคียงเฉพาะแนวเกลียว
-    """
     if len(centroids) < 2:
         return None, None, None, None
 
-    # ระยะห่างระหว่างตาข้างเคียงที่เหมาะสม (5% - 30% ของความสูงภาพ)
     min_neighbor_dist = img_h * 0.05
     max_neighbor_dist = img_h * 0.30
-
     spiral_slopes = []
 
-    # หาคู่ตาที่อยู่ในแนวเกลียว บนซ้าย -> ล่างขวา (dx > 0 และ dy > 0)
     n = len(centroids)
     for i in range(n):
         for j in range(n):
             if i == j:
                 continue
-            p1 = centroids[i]  # จุดเริ่ม (ต้องอยู่ซ้าย/บนกว่า)
-            p2 = centroids[j]  # จุดจบ (ต้องอยู่ขวา/ล่างกว่า)
+            p1, p2 = centroids[i], centroids[j]
+            dx, dy = p2[0] - p1[0], p2[1] - p1[1]
 
-            dx = p2[0] - p1[0]
-            dy = p2[1] - p1[1]
-
-            # คัดกรองเฉพาะทิศทาง บนซ้าย -> ล่างขวา
             if dx > 10 and dy > 10:
                 dist = math.hypot(dx, dy)
                 if min_neighbor_dist <= dist <= max_neighbor_dist:
                     slope_px = dy / dx
-                    # มุมเกลียวปกติจะอยู่ระหว่าง 20° ถึง 65° ในระบบพิกัดพิกเซล (m ระหว่าง 0.36 ถึง 2.14)
                     if 0.35 <= slope_px <= 2.5:
                         spiral_slopes.append(slope_px)
 
-    # หากไม่พบคู่เกลียว ให้ใช้ค่าความชันเฉลี่ยรวม
     if spiral_slopes:
         m_pixel = float(np.median(spiral_slopes))
     else:
-        # Fallback กรณีตาอยู่น้อย
         x_coords = np.array([p[0] for p in centroids], dtype=np.float64)
         y_coords = np.array([p[1] for p in centroids], dtype=np.float64)
         m_pixel, _ = np.polyfit(x_coords, y_coords, 1)
         m_pixel = abs(float(m_pixel))
 
-    # คำนวณมุมแหลม phi ที่ทำกับแนวนอน
-    phi_rad = math.atan(m_pixel)
-    phi_deg = math.degrees(phi_rad)
-
-    # คำนวณมุมเกลียวจริง theta = 180 - phi (วัดจากแนวนอนฝั่งขวา ทวนเข็มขึ้นไปหาเกลียวบนซ้าย)
+    phi_deg = math.degrees(math.atan(m_pixel))
     theta_deg = 180.0 - phi_deg
 
-    # จุดศูนย์กลางของตาทั้งหมดเพื่อใช้วาดเส้นผ่านจุดกลาง
     mean_x = float(np.mean([p[0] for p in centroids]))
     mean_y = float(np.mean([p[1] for p in centroids]))
-
-    # คำนวณจุดตัด c (intercept) สำหรับวาดเส้น y = m*x + c
     intercept = mean_y - (m_pixel * mean_x)
 
     return m_pixel, intercept, phi_deg, theta_deg
 
 
 def draw_visual_overlay(pil_img, centroids, slope, intercept, phi_deg, theta_deg):
-    """วาดเส้นแนวเกลียวสับปะรดและเส้นแนวนอน 0 องศา สีแดงตรงตามรูปอ้างอิง"""
     img_copy = pil_img.copy()
     draw = PIL.ImageDraw.Draw(img_copy)
     w, h = img_copy.size
 
     x_coords = [p[0] for p in centroids]
-    y_coords = [p[1] for p in centroids]
-
     mean_x = float(np.mean(x_coords))
-    mean_y = float(np.mean(y_coords))
+    mean_y = float(np.mean([p[1] for p in centroids]))
 
-    # ความยาวของเส้นที่จะวาด
     line_length = int(w * 0.4)
     x_min = max(0, int(mean_x - line_length))
     x_max = min(w, int(mean_x + line_length))
 
-    # 1. วาดจุดตา (Green Circles)
     circle_radius = max(5, int(min(w, h) * 0.009))
     for cx, cy in centroids:
         draw.ellipse(
-            [
-                cx - circle_radius,
-                cy - circle_radius,
-                cx + circle_radius,
-                cy + circle_radius,
-            ],
-            fill="#00FF66",
-            outline="#000000",
-            width=2,
+            [cx - circle_radius, cy - circle_radius, cx + circle_radius, cy + circle_radius],
+            fill="#00FF66", outline="#000000", width=2
         )
 
     if slope is not None and intercept is not None:
-        # 2. วาดเส้นแนวนอน Baseline 0° (เส้นสีแดง ตัดผ่านจุดศูนย์กลาง)
-        draw.line(
-            [(x_min, mean_y), (x_max, mean_y)],
-            fill="#FF0000",
-            width=4,
-        )
+        draw.line([(x_min, mean_y), (x_max, mean_y)], fill="#FF0000", width=4)
+        y1, y2 = slope * x_min + intercept, slope * x_max + intercept
+        draw.line([(x_min, int(y1)), (x_max, int(y2))], fill="#FF0000", width=4)
 
-        # 3. วาดเส้นแนวเกลียวสับปะรด (เส้นสีแดง เฉียงเฉลียงผ่านกลางผล)
-        y1 = slope * x_min + intercept
-        y2 = slope * x_max + intercept
-        draw.line(
-            [(x_min, int(y1)), (x_max, int(y2))],
-            fill="#FF0000",
-            width=4,
-        )
-
-        # 4. แสดงข้อความค่ามุม theta บนภาพ
         text_info = f"Spiral Angle (Theta) = {theta_deg:.1f} deg"
-        draw.text(
-            (max(10, x_min), max(10, int(mean_y) - 45)),
-            text_info,
-            fill="#FFFF00",
-        )
+        draw.text((max(10, x_min), max(10, int(mean_y) - 45)), text_info, fill="#FFFF00")
 
     return img_copy
 
 
 def analyze_with_gemini(pil_img, theta_val, api_key, model_name):
-    """ส่งภาพ + มุมเกลียว ให้ Gemini ประเมินโมเดลและคำนวณ Brix"""
-    client = genai.Client(api_key=api_key)
+    genai.configure(api_key=api_key)
+    model = genai.GenerativeModel(model_name)
 
     prompt = f"""
     คุณเป็นระบบวิเคราะห์ทางชีววิทยาและพฤกษศาสตร์สับปะรด
@@ -253,10 +187,8 @@ def analyze_with_gemini(pil_img, theta_val, api_key, model_name):
     
     โปรดระบุผลการวิเคราะห์สั้นๆ ชัดเจน สรุปว่าเลือกโมเดลใด พร้อมแสดงขั้นตอนคำนวณค่า °Brix ที่ได้
     """
-
-    response = client.models.generate_content(
-        model=model_name, contents=[pil_img, prompt]
-    )
+    
+    response = model.generate_content([pil_img, prompt])
     return response.text
 
 
@@ -267,16 +199,13 @@ col1, col2 = st.columns([1, 1])
 
 with col1:
     st.subheader("1. อัปโหลดรูปภาพ")
-    uploaded_file = st.file_uploader(
-        "เลือกรูปภาพสับปะรด", type=["jpg", "jpeg", "png"]
-    )
+    uploaded_file = st.file_uploader("เลือกรูปภาพสับปะรด", type=["jpg", "jpeg", "png"])
 
     if uploaded_file is not None:
         temp_path = "temp_upload.jpg"
         image = PIL.Image.open(uploaded_file).convert("RGB")
         image.save(temp_path)
         img_w, img_h = image.size
-
         st.image(image, caption="รูปภาพต้นฉบับ", use_container_width=True)
 
 with col2:
@@ -286,55 +215,33 @@ with col2:
         if not GEMINI_KEY:
             st.warning("⚠️ กรุณากรอก Gemini API Key ในแถบด้านซ้ายก่อนเริ่มประมวลผล")
         elif st.button("🚀 เริ่มประมวลผลระบบ Hybrid AI", type="primary"):
-            with st.spinner("กำลังตรวจจับพิกัดตา คัดกรอง และคำนวณมุมเกลียว..."):
+            with st.spinner("กำลังตรวจจับพิกัดตา และคำนวณมุมเกลียว..."):
                 try:
                     yolo_model = load_yolo_model("best.pt")
-                    centroids = detect_and_filter_eyes(
-                        temp_path, yolo_model, img_w, img_h, dist_threshold_ratio
-                    )
+                    centroids = detect_and_filter_eyes(temp_path, yolo_model, img_w, img_h, dist_threshold_ratio)
                 except Exception as e:
                     st.error("เกิดข้อผิดพลาดในการรันโมเดล YOLO:")
                     st.exception(e)
                     centroids = []
 
             if len(centroids) < 2:
-                st.warning(
-                    "⚠️ ตรวจจับตาได้น้อยกว่า 2 จุด ไม่สามารถคำนวณเส้นถดถอยได้"
-                )
+                st.warning("⚠️ ตรวจจับตาได้น้อยกว่า 2 จุด ไม่สามารถคำนวณเส้นถดถอยได้")
             else:
-                # คำนวณมุมเกลียวสับปะรดด้วยอัลกอริทึมใหม่
-                slope, intercept, phi, theta = calculate_accurate_spiral_angle(
-                    centroids, img_w, img_h
-                )
+                slope, intercept, phi, theta = calculate_accurate_spiral_angle(centroids, img_w, img_h)
 
-                st.success(
-                    f"🟢 ตรวจจับตาได้ {len(centroids)} จุด | คำนวณมุมเกลียว θ = {theta:.1f}°"
-                )
+                st.success(f"🟢 ตรวจจับตาได้ {len(centroids)} จุด | คำนวณมุมเกลียว θ = {theta:.1f}°")
 
-                # แสดงภาพ Visual Overlay เส้นแดงแบบในรูปอ้างอิง
-                overlay_img = draw_visual_overlay(
-                    image, centroids, slope, intercept, phi, theta
-                )
-                st.image(
-                    overlay_img,
-                    caption=f"มุมเกลียวสับปะรด θ = {theta:.1f}° (วัดจากแนวนอนฝั่งขวาทวนเข็มขึ้นไป)",
-                    use_container_width=True,
-                )
+                overlay_img = draw_visual_overlay(image, centroids, slope, intercept, phi, theta)
+                st.image(overlay_img, caption=f"มุมเกลียวสับปะรด θ = {theta:.1f}°", use_container_width=True)
 
-                # ส่งต่อให้ Gemini ประเมินผล
-                with st.spinner(
-                    f"กำลังส่งข้อมูลให้ Gemini ({gemini_model_name}) วิเคราะห์ประเมินค่า °Brix..."
-                ):
+                with st.spinner("กำลังส่งข้อมูลให้ Gemini วิเคราะห์..."):
                     try:
-                        gemini_result = analyze_with_gemini(
-                            image, theta, GEMINI_KEY, gemini_model_name
-                        )
+                        gemini_result = analyze_with_gemini(image, theta, GEMINI_KEY, gemini_model_name)
                         st.markdown("### 🤖 ผลการวิเคราะห์จาก Gemini")
                         st.write(gemini_result)
                     except Exception as e:
                         st.error("เกิดข้อผิดพลาดในการเรียก Gemini API:")
                         st.exception(e)
 
-            # ลบไฟล์ชั่วคราว
             if os.path.exists(temp_path):
                 os.remove(temp_path)
