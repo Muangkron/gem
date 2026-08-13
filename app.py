@@ -9,7 +9,7 @@ import streamlit as st
 from ultralytics import YOLO
 
 # -----------------------------------------------------------------------------
-# 1. Page Config & Secrets Setup
+# 1. Page Config
 # -----------------------------------------------------------------------------
 st.set_page_config(
     page_title="🍍 Hybrid AI Pineapple Brix System",
@@ -19,15 +19,41 @@ st.set_page_config(
 
 st.title("🍍 ระบบประเมินความหวานสับปะรด (Local YOLO + Math + Gemini)")
 st.caption(
-    "ระบบผสมผสาน: Local YOLO Detection (.pt model) ➔ Least Squares Angle Calculation ➔ Gemini Vision Reasoning"
+    "ระบบผสมผสาน: Local YOLO Detection (.pt model) ➔ Least Squares Angle"
+    " Calculation ➔ Gemini Vision Reasoning"
 )
 
-# ดึงเฉพาะ Gemini Key (ไม่ต้องใช้ Roboflow Key แล้ว)
-GEMINI_KEY = st.secrets.get("GEMINI_API_KEY", "")
+# -----------------------------------------------------------------------------
+# 2. Sidebar Setup & API Key Input (เพิ่มช่องกรอก API Key ตรงนี้)
+# -----------------------------------------------------------------------------
+api_key_secret = st.secrets.get("GEMINI_API_KEY", "")
+
+with st.sidebar:
+    st.header("🔑 การตั้งค่า API Key")
+    user_gemini_key = st.text_input(
+        "กรอก Gemini API Key ของคุณ:",
+        value=api_key_secret,
+        type="password",
+        help="นำ API Key จาก Google AI Studio มาวางตรงนี้เพื่อเริ่มใช้งาน",
+    )
+    # เลือกรหัสจากช่องกรอกก่อน หากไม่มีค่อยดึงจาก Secrets
+    GEMINI_KEY = user_gemini_key if user_gemini_key else api_key_secret
+
+    st.markdown("---")
+    st.header("📌 เกณฑ์แบบจำลองสับปะรด")
+    st.markdown("""
+    **Model 5-8-13:**
+    - ตาขนาดใหญ่ ร่องตาห่าง
+    - มุมเกลียวอุดมคติ $\\theta_0 = 155^\\circ$
+    
+    **Model 8-13-21:**
+    - ตาขนาดเล็ก ถี่ อัดแน่น
+    - มุมเกลียวอุดมคติ $\\theta_0 = 136^\\circ$
+    """)
 
 
 # -----------------------------------------------------------------------------
-# 2. Load Local YOLO Model
+# 3. Load Local YOLO Model
 # -----------------------------------------------------------------------------
 @st.cache_resource
 def load_yolo_model(model_path="best.pt"):
@@ -36,7 +62,7 @@ def load_yolo_model(model_path="best.pt"):
 
 
 # -----------------------------------------------------------------------------
-# 3. Core Helper Functions
+# 4. Core Helper Functions
 # -----------------------------------------------------------------------------
 def detect_eyes_local_yolo(image_path, model):
     """ใช้โมเดล YOLO ในเครื่องตรวจจับพิกัดตา"""
@@ -46,7 +72,6 @@ def detect_eyes_local_yolo(image_path, model):
     for r in results:
         boxes = r.boxes
         for box in boxes:
-            # ดึงพิกัดจุดศูนย์กลาง x_center, y_center ของ Bounding Box
             x_center, y_center, w, h = box.xywh[0].tolist()
             centroids.append((x_center, y_center))
 
@@ -94,27 +119,26 @@ def draw_visual_overlay(pil_img, centroids, slope, intercept):
     return img_copy
 
 
-def analyze_with_gemini(pil_img, theta_val, weight_kg):
-    """ส่งภาพ + มุม + น้ำหนัก ไปให้ Gemini ประเมินโมเดลและคำนวณ Brix"""
-    client = genai.Client(api_key=GEMINI_KEY)
+def analyze_with_gemini(pil_img, theta_val, api_key):
+    """ส่งภาพ + มุมเกลียว ให้ Gemini ประเมินโมเดลและคำนวณ Brix"""
+    client = genai.Client(api_key=api_key)
 
     prompt = f"""
     คุณเป็นระบบวิเคราะห์ทางชีววิทยาและพฤกษศาสตร์สับปะรด
     
     ข้อมูลอินพุตจากระบบวัดมุมพิกัดจริง:
     - มุมเกลียวสับปะรดที่คำนวณได้ (theta): {theta_val:.2f} องศา
-    - น้ำหนักผลประมาณ: {weight_kg:.2f} กิโลกรัม
     
     หน้าที่ของคุณ:
-    1. ตรวจสอบภาพถ่ายสับปะรดเพื่อดูความหนาแน่นของตาและลวดลายผล
-    2. ตัดสินใจเลือกโมเดลที่ถูกต้องระหว่าง:
-       - 'Model 5-8-13' (สำหรับผลเล็ก-กลาง ตาใหญ่ห่าง มุมอุดมคติ 155 องศา)
-       - 'Model 8-13-21' (สำหรับผลกลาง-ใหญ่ ตาเล็กถี่อัดแน่น มุมอุดมคติ 136 องศา)
+    1. วิเคราะห์รูปถ่ายสับปะรดเพื่อดูความหนาแน่น ขนาดตา และระยะห่างของร่องตา
+    2. ตัดสินใจเลือกแบบจำลองสับปะรดที่ถูกต้องระหว่าง:
+       - 'Model 5-8-13' (ตาใหญ่ ร่องตาห่าง มุมอุดมคติ 155 องศา)
+       - 'Model 8-13-21' (ตาเล็ก ร่องตาถี่อัดแน่น มุมอุดมคติ 136 องศา)
     3. คำนวณค่าความหวาน (°Brix) ตามสมการ:
        - หากเลือก Model 5-8-13: ให้คำนวณ x = |theta - 155| และ Brix = (-0.0196 * x^2) + (0.0045 * x) + 16.757
        - หากเลือก Model 8-13-21: ให้คำนวณ x = |theta - 136| และ Brix = (0.0082 * x^2) - (0.6667 * x) + 16.362
     
-    โปรดสรุปผลการวิเคราะห์สั้นๆ เป็นระเบียบ ชัดเจน พร้อมระบุเหตุผลในการเลือกโมเดล และสรุปค่า °Brix ที่ได้
+    โปรดระบุผลการวิเคราะห์สั้นๆ ชัดเจน สรุปว่าเลือกโมเดลใด พร้อมแสดงขั้นตอนคำนวณค่า °Brix ที่ได้
     """
 
     response = client.models.generate_content(
@@ -124,19 +148,8 @@ def analyze_with_gemini(pil_img, theta_val, weight_kg):
 
 
 # -----------------------------------------------------------------------------
-# 4. Streamlit UI Layout
+# 5. Main UI Layout
 # -----------------------------------------------------------------------------
-with st.sidebar:
-    st.header("⚙️ ตั้งค่าข้อมูลกายภาพ")
-    weight_input = st.number_input(
-        "น้ำหนักผล (กิโลกรัม):",
-        min_value=0.3,
-        max_value=4.0,
-        value=1.1,
-        step=0.1,
-    )
-    st.info("💡 น้ำหนัก < 1.2 kg มักเป็น 5-8-13 | น้ำหนัก >= 1.2 kg มักเป็น 8-13-21")
-
 col1, col2 = st.columns([1, 1])
 
 with col1:
@@ -154,54 +167,63 @@ with col1:
 
 with col2:
     st.subheader("2. ผลการวิเคราะห์")
-    if uploaded_file is not None and st.button(
-        "🚀 เริ่มประมวลผลระบบ Hybrid AI", type="primary"
-    ):
-        with st.spinner("กำลังโหลดโมเดลและตรวจจับพิกัดตา..."):
-            try:
-                yolo_model = load_yolo_model("best.pt")
-                centroids = detect_eyes_local_yolo(temp_path, yolo_model)
-            except Exception as e:
-                st.error(
-                    f"เกิดข้อผิดพลาดในการโหลดโมเดล: {e}\nโปรดตรวจสอบว่ามีไฟล์ best.pt ใน GitHub แล้วหรือยัง"
-                )
-                centroids = []
 
-        if len(centroids) < 2:
-            st.warning(
-                "⚠️ ตรวจจับตาได้น้อยกว่า 2 จุด ไม่สามารถคำนวณเส้นถดถอยได้"
-            )
-        else:
-            st.success(f"🟢 โมเดลตรวจจับจุดตาได้ทั้งหมด {len(centroids)} จุด")
-
-            # คำนวณทางคณิตศาสตร์
-            slope, intercept, phi, theta = calculate_regression_angle(
-                centroids
-            )
-
-            # แสดงภาพ Overlay
-            overlay_img = draw_visual_overlay(
-                image, centroids, slope, intercept
-            )
-            st.image(
-                overlay_img,
-                caption=f"จุดตา (เขียว) | เส้นถดถอย (แดง) มุมเกลียว θ = {theta:.2f}°",
-                use_container_width=True,
-            )
-
-            # ส่งต่อให้ Gemini ประเมินผล
-            with st.spinner("กำลังส่งข้อมูลให้ Gemini วิเคราะห์ประเมินค่า °Brix..."):
+    if uploaded_file is not None:
+        # เช็กว่ากรอก API Key หรือยัง
+        if not GEMINI_KEY:
+            st.warning("⚠️ กรุณากรอก Gemini API Key ในแถบด้านซ้ายก่อนเริ่มประมวลผล")
+        elif st.button("🚀 เริ่มประมวลผลระบบ Hybrid AI", type="primary"):
+            with st.spinner("กำลังโหลดโมเดลและตรวจจับพิกัดตา..."):
                 try:
-                    gemini_result = analyze_with_gemini(
-                        image, theta, weight_input
-                    )
-                    st.markdown("### 🤖 ผลการวิเคราะห์จาก Gemini")
-                    st.write(gemini_result)
+                    yolo_model = load_yolo_model("best.pt")
+                    centroids = detect_eyes_local_yolo(temp_path, yolo_model)
                 except Exception as e:
                     st.error(
-                        f"เกิดข้อผิดพลาดในการเรียก Gemini API: {e}\nกรุณาตรวจสอบ GEMINI_API_KEY ใน Streamlit Secrets"
+                        f"เกิดข้อผิดพลาดในการโหลดโมเดล: {e}\nโปรดตรวจสอบว่าอัปโหลดไฟล์"
+                        " best.pt ขึ้น GitHub แล้วหรือยัง"
                     )
+                    centroids = []
 
-        # ลบไฟล์ชั่วคราวหลังใช้งานเสร็จ
-        if os.path.exists(temp_path):
-            os.remove(temp_path)
+            if len(centroids) < 2:
+                st.warning(
+                    "⚠️ ตรวจจับตาได้น้อยกว่า 2 จุด ไม่สามารถคำนวณเส้นถดถอยได้"
+                )
+            else:
+                st.success(f"🟢 โมเดลตรวจจับจุดตาได้ทั้งหมด {len(centroids)} จุด")
+
+                # คำนวณทางคณิตศาสตร์
+                slope, intercept, phi, theta = calculate_regression_angle(
+                    centroids
+                )
+
+                # แสดงภาพ Overlay
+                overlay_img = draw_visual_overlay(
+                    image, centroids, slope, intercept
+                )
+                st.image(
+                    overlay_img,
+                    caption=(
+                        f"จุดตา (เขียว) | เส้นถดถอย (แดง) มุมเกลียว θ ="
+                        f" {theta:.2f}°"
+                    ),
+                    use_container_width=True,
+                )
+
+                # ส่งต่อให้ Gemini ประเมินผล
+                with st.spinner(
+                    "กำลังส่งข้อมูลให้ Gemini วิเคราะห์ประเมินค่า °Brix..."
+                ):
+                    try:
+                        gemini_result = analyze_with_gemini(
+                            image, theta, GEMINI_KEY
+                        )
+                        st.markdown("### 🤖 ผลการวิเคราะห์จาก Gemini")
+                        st.write(gemini_result)
+                    except Exception as e:
+                        st.error(
+                            f"เกิดข้อผิดพลาดในการเรียก Gemini API: {e}\nโปรดตรวจสอบว่า API Key ถูกต้องหรือไม่"
+                        )
+
+            # ลบไฟล์ชั่วคราว
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
