@@ -31,7 +31,7 @@ with st.sidebar:
         "Gemini API Key:",
         value=api_key_secret,
         type="password",
-        help="นำ API Key ใหม่จาก Google AI Studio มาวางที่นี่",
+        help="นำ API Key จาก Google AI Studio มาวางตรงนี้",
     )
     GEMINI_KEY = user_gemini_key if user_gemini_key else api_key_secret
 
@@ -154,14 +154,10 @@ def draw_visual_overlay(pil_img, centroids, slope, intercept, phi_deg, theta_deg
     return img_copy
 
 def analyze_with_gemini(pil_img, theta_val, api_key):
-    # ปรับภาพให้เล็กลงเพื่อให้ส่งผ่าน API ได้รวดเร็วที่สุด
     fast_img = pil_img.copy()
     fast_img.thumbnail((800, 800))
 
     genai.configure(api_key=api_key)
-    
-    # ใช้โมเดล gemini-1.5-flash แบบมาตรฐานโดยตรง
-    model = genai.GenerativeModel("gemini-1.5-flash")
 
     prompt = f"""
     คุณเป็นระบบวิเคราะห์ทางชีววิทยาและพฤกษศาสตร์สับปะรด
@@ -180,9 +176,28 @@ def analyze_with_gemini(pil_img, theta_val, api_key):
     
     โปรดระบุผลการวิเคราะห์สั้นๆ ชัดเจน สรุปว่าเลือกโมเดลใด พร้อมแสดงขั้นตอนคำนวณค่า °Brix ที่ได้
     """
-    
-    response = model.generate_content([fast_img, prompt])
-    return response.text
+
+    # รายชื่อโมเดลที่เรียงตามความเสถียรและเวอร์ชันล่าสุดบน Google API
+    candidate_models = [
+        "gemini-2.0-flash",
+        "gemini-1.5-flash-002",
+        "gemini-1.5-flash-latest",
+        "gemini-1.5-pro-latest",
+        "models/gemini-1.5-flash"
+    ]
+
+    last_error = None
+    for model_name in candidate_models:
+        try:
+            model = genai.GenerativeModel(model_name)
+            response = model.generate_content([fast_img, prompt])
+            return response.text, model_name
+        except Exception as e:
+            last_error = e
+            continue
+
+    # หากทุกโมเดลล้มเหลว ให้โยน Error ออกมาแจ้งเตือน
+    raise last_error
 
 # -----------------------------------------------------------------------------
 # 5. Main UI Layout
@@ -228,7 +243,8 @@ with col2:
 
                 with st.spinner("กำลังส่งข้อมูลให้ Gemini วิเคราะห์..."):
                     try:
-                        gemini_result = analyze_with_gemini(image, theta, GEMINI_KEY)
+                        gemini_result, used_model = analyze_with_gemini(image, theta, GEMINI_KEY)
+                        st.caption(f"✨ ประมวลผลสำเร็จผ่านโมเดล: `{used_model}`")
                         st.markdown("### 🤖 ผลการวิเคราะห์จาก Gemini")
                         st.write(gemini_result)
                     except Exception as e:
