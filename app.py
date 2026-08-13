@@ -189,7 +189,7 @@ def analyze_and_classify_with_gemini(pil_img, theta_val, api_key):
     """
 
     # ใช้ตระกูล Flash ในการประมวลผล Vision
-    candidate_models = ["gemini-3.6-flash", "gemini-2.0-flash", "gemini-2.5-flash"]
+    candidate_models = ["gemini-3.6-flash"]
     
     last_error = None
     for m_name in candidate_models:
