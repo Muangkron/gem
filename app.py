@@ -67,28 +67,28 @@ def calculate_brix(theta, model_choice):
 
 
 # -----------------------------------------------------------------------------
-# 4. Advanced Precision OpenCV Angle & Eye Grid Detection
+# 4. Advanced Precision OpenCV Angle Detection (แก้ไข Error เรียบร้อย)
 # -----------------------------------------------------------------------------
 def detect_precise_angle_opencv(pil_img):
     img_np = np.array(pil_img.convert("RGB"))
     h, w, _ = img_np.shape
 
-    # Focus on Center Fruit ROI (30%-70% W, 25%-75% H)
+    # Crop Center ROI (30%-70% W, 25%-75% H)
     rx1, rx2 = int(w * 0.30), int(w * 0.70)
     ry1, ry2 = int(h * 0.25), int(h * 0.75)
     roi = img_np[ry1:ry2, rx1:rx2]
 
     gray = cv2.cvtColor(roi, cv2.COLOR_RGB2GRAY)
 
-    # Contrast enhancement & noise reduction for spiral lines
+    # Contrast Enhancement
     clahe = cv2.createCLAHE(clipLimit=3.5, tileGridSize=(8, 8))
     enhanced = clahe.apply(gray)
     blurred = cv2.GaussianBlur(enhanced, (5, 5), 0)
 
-    # Adaptive threshold & Edge Detection
+    # Edge Detection
     edges = cv2.Canny(blurred, 30, 120)
 
-    # Hough Line Transform with fine resolution
+    # Hough Lines Detection
     lines = cv2.HoughLinesP(
         edges,
         rho=1,
@@ -101,16 +101,18 @@ def detect_precise_angle_opencv(pil_img):
     valid_angles = []
     if lines is not None:
         for line in lines:
-            x1, y1, x2, y2 = line[0]
-            dx = float(x2 - x1)
-            dy = float(y2 - y1)
-            if dx != 0:
-                slope = dy / dx
-                # Spiral direction: top-left to bottom-right (positive slope)
-                if slope > 0.3:
-                    angle_deg = math.degrees(math.atan(slope))
-                    if 20.0 <= angle_deg <= 70.0:
-                        valid_angles.append(angle_deg)
+            # กระจายค่าด้วย .flatten() เพื่อป้องกัน TypeError บน Linux
+            coords = line.flatten()
+            if len(coords) == 4:
+                x1, y1, x2, y2 = coords
+                dx = float(x2 - x1)
+                dy = float(y2 - y1)
+                if dx != 0:
+                    slope = dy / dx
+                    if slope > 0.3:  # แนวเกลียวซ้ายบน -> ขวาล่าง
+                        angle_deg = math.degrees(math.atan(slope))
+                        if 20.0 <= angle_deg <= 70.0:
+                            valid_angles.append(angle_deg)
 
     if valid_angles:
         best_phi = float(np.median(valid_angles))
@@ -233,7 +235,7 @@ with col_left:
         ):
             st.session_state.current_file_id = file_id
 
-            # OpenCV Precision Detection
+            # OpenCV Precision Angle Detection
             cv_phi, roi_box = detect_precise_angle_opencv(image)
             st.session_state.cv_phi = cv_phi
             st.session_state.roi_box = roi_box
@@ -257,7 +259,7 @@ with col_left:
                     "7-10 ตา",
                     "ตาเล็กอัดแน่น",
                     cv_phi,
-                    "กรุณากรอก API Key",
+                    "กรุณากรอก API Key ในแถบด้านซ้าย",
                 )
 
             st.session_state.detected_model = model_choice
