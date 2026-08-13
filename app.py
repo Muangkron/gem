@@ -37,13 +37,13 @@ with st.sidebar:
     )
     GEMINI_KEY = user_gemini_key if user_gemini_key else api_key_secret
 
-    # ใช้โมเดลที่ต่อท้ายด้วย -latest จะเสถียรและตอบกลับเร็วที่สุด
+    # แก้ไขชื่อ Model Identifier ให้มี prefix 'models/' ป้องกัน Error 404
     selected_model_option = st.selectbox(
         "เลือกรุ่น Gemini Model:",
         options=[
-            "gemini-1.5-flash-latest",
-            "gemini-1.5-pro-latest",
-            "gemini-1.5-flash",
+            "models/gemini-1.5-flash",
+            "models/gemini-2.0-flash",
+            "models/gemini-1.5-pro",
         ],
         index=0,
     )
@@ -167,11 +167,16 @@ def draw_visual_overlay(pil_img, centroids, slope, intercept, phi_deg, theta_deg
     return img_copy
 
 def analyze_with_gemini(pil_img, theta_val, api_key, model_name):
-    # ปรับขนาดภาพเล็กน้อยก่อนส่ง เพื่อความรวดเร็วในการรับส่งผ่าน Network
+    # ย่อขนาดรูปเพื่อให้ประมวลผลเร็วขึ้น
     fast_img = pil_img.copy()
     fast_img.thumbnail((800, 800))
 
     genai.configure(api_key=api_key)
+    
+    # หากระบุชื่อโดยไม่มี 'models/' ให้เติมอัตโนมัติ
+    if not model_name.startswith("models/"):
+        model_name = f"models/{model_name}"
+
     model = genai.GenerativeModel(model_name)
 
     prompt = f"""
@@ -192,8 +197,7 @@ def analyze_with_gemini(pil_img, theta_val, api_key, model_name):
     โปรดระบุผลการวิเคราะห์สั้นๆ ชัดเจน สรุปว่าเลือกโมเดลใด พร้อมแสดงขั้นตอนคำนวณค่า °Brix ที่ได้
     """
     
-    # ส่งคำขอวิเคราะห์
-    response = model.generate_content([fast_img, prompt], request_options={"timeout": 30})
+    response = model.generate_content([fast_img, prompt])
     return response.text
 
 # -----------------------------------------------------------------------------
