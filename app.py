@@ -20,9 +20,10 @@ st.set_page_config(
 )
 
 st.title("🍍 ระบบประเมินความหวานสับปะรด (Local YOLO + Spiral Math + Gemini)")
+st.caption("ระบบประมวลผล: YOLO Eye Detection ➔ Duplicate Filtering ➔ Spiral Vector Matching ➔ Dynamic Gemini Model Fetching")
 
 # -----------------------------------------------------------------------------
-# 2. Sidebar Settings
+# 2. Sidebar Settings & Dynamic Model Fetcher
 # -----------------------------------------------------------------------------
 api_key_secret = st.secrets.get("GEMINI_API_KEY", "")
 
@@ -36,12 +37,35 @@ with st.sidebar:
     )
     GEMINI_KEY = user_gemini_key if user_gemini_key else api_key_secret
 
-    # ใช้โมเดลมาตรฐาน gemini-1.5-flash
-    gemini_model_name = st.selectbox(
-        "รุ่น Gemini Model:",
-        options=["gemini-1.5-flash", "gemini-1.5-pro"],
-        index=0,
-    )
+    # ฟังก์ชันดึงรายชื่อโมเดลที่ API Key นี้ใช้งานได้จริง (ป้องกันปัญหา 404)
+    def fetch_valid_models(api_key):
+        if not api_key:
+            return []
+        try:
+            genai.configure(api_key=api_key)
+            available_models = []
+            for m in genai.list_models():
+                # ดึงเฉพาะโมเดลที่รองรับ generateContent
+                if 'generateContent' in m.supported_generation_methods:
+                    name = m.name.replace('models/', '')
+                    # คัดเฉพาะโมเดลตระกูล gemini
+                    if 'gemini' in name:
+                        available_models.append(name)
+            return sorted(available_models)
+        except Exception:
+            return []
+
+    valid_models = fetch_valid_models(GEMINI_KEY)
+
+    if valid_models:
+        selected_model_option = st.selectbox(
+            "เลือกโมเดล Gemini (ที่ใช้งานได้จริงใน Key คุณ):",
+            options=valid_models,
+            index=0
+        )
+    else:
+        st.warning("⚠️ ไม่พบโมเดลที่ใช้งานได้ กรุณาเช็ก Gemini API Key")
+        selected_model_option = "gemini-1.5-flash"
 
     st.markdown("---")
     st.header("⚙️ ปรับแต่งระบบวัดเกลียว")
@@ -50,9 +74,8 @@ with st.sidebar:
         min_value=1.0,
         max_value=6.0,
         value=2.5,
-        step=0.5,
+        step=0.5
     )
-
 
 # -----------------------------------------------------------------------------
 # 3. Load Local YOLO Model
@@ -60,7 +83,6 @@ with st.sidebar:
 @st.cache_resource
 def load_yolo_model(model_path="best.pt"):
     return YOLO(model_path)
-
 
 # -----------------------------------------------------------------------------
 # 4. Core Helper Functions
@@ -92,7 +114,6 @@ def detect_and_filter_eyes(image_path, model, img_w, img_h, ratio=2.5):
             filtered_centroids.append(c)
 
     return filtered_centroids
-
 
 def calculate_accurate_spiral_angle(centroids, img_w, img_h):
     if len(centroids) < 2:
@@ -134,7 +155,6 @@ def calculate_accurate_spiral_angle(centroids, img_w, img_h):
 
     return m_pixel, intercept, phi_deg, theta_deg
 
-
 def draw_visual_overlay(pil_img, centroids, slope, intercept, phi_deg, theta_deg):
     img_copy = pil_img.copy()
     draw = PIL.ImageDraw.Draw(img_copy)
@@ -165,7 +185,6 @@ def draw_visual_overlay(pil_img, centroids, slope, intercept, phi_deg, theta_deg
 
     return img_copy
 
-
 def analyze_with_gemini(pil_img, theta_val, api_key, model_name):
     genai.configure(api_key=api_key)
     model = genai.GenerativeModel(model_name)
@@ -190,7 +209,6 @@ def analyze_with_gemini(pil_img, theta_val, api_key, model_name):
     
     response = model.generate_content([pil_img, prompt])
     return response.text
-
 
 # -----------------------------------------------------------------------------
 # 5. Main UI Layout
@@ -234,9 +252,9 @@ with col2:
                 overlay_img = draw_visual_overlay(image, centroids, slope, intercept, phi, theta)
                 st.image(overlay_img, caption=f"มุมเกลียวสับปะรด θ = {theta:.1f}°", use_container_width=True)
 
-                with st.spinner("กำลังส่งข้อมูลให้ Gemini วิเคราะห์..."):
+                with st.spinner(f"กำลังส่งข้อมูลให้ Gemini (`{selected_model_option}`) วิเคราะห์..."):
                     try:
-                        gemini_result = analyze_with_gemini(image, theta, GEMINI_KEY, gemini_model_name)
+                        gemini_result = analyze_with_gemini(image, theta, GEMINI_KEY, selected_model_option)
                         st.markdown("### 🤖 ผลการวิเคราะห์จาก Gemini")
                         st.write(gemini_result)
                     except Exception as e:
