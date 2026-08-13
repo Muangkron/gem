@@ -1,14 +1,5 @@
-# ตัวอย่างไฟล์ requirements.txt สำหรับโปรเจกต์ Image Processing / AI
-
-# 1. ล็อกเวอร์ชันเป๊ะๆ (แนะนำสำหรับ Production เพื่อความชัวร์)
-numpy==1.26.4
-opencv-python==4.9.0.80
-
-# 2. ยอมรับเวอร์ชันที่ใหม่กว่าขึ้นไป
-mediapipe>=0.10.9
-
-# 3. กำหนดช่วงเวอร์ชัน
-scikit-learn>=1.2.0,<1.5.0
-
-# 4. ไม่ระบุเวอร์ชัน (pip จะโหลดเวอร์ชันล่าสุดให้เสมอ - มีความเสี่ยงโค้ดพังในอนาคต)
+streamlit
+google-genai
+opencv-python-headless
+numpy
 pillow
