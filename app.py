@@ -17,8 +17,8 @@ st.set_page_config(
     layout="wide",
 )
 
-st.title("🍍 ระบบประเมินความหวานสับปะรด (Local YOLO + Spiral Math + Gemini)")
-st.caption("ระบบประมวลผล: YOLO Eye Detection ➔ Duplicate Filtering ➔ Spiral Vector Matching ➔ Gemini Vision")
+st.title("🍍 ระบบประเมินความหวานสับปะรด (YOLO + Math Angle + Gemini Vision Classification)")
+st.caption("ขั้นตอน: 1. YOLO ตรวจจับพิกัดตา ➔ 2. Math คำนวณมุมเกลียว θ ➔ 3. Gemini Vision วิเคราะห์จำแนกโมเดลและคำนวณ Brix")
 
 # -----------------------------------------------------------------------------
 # 2. Sidebar Settings
@@ -56,6 +56,7 @@ def load_yolo_model(model_path="best.pt"):
 # 4. Helper Functions
 # -----------------------------------------------------------------------------
 def detect_and_filter_eyes(image_path, model, img_w, img_h, ratio=2.5):
+    """ใช้ YOLO ตรวจจับพิกัดตา และกรองจุดที่ซ้อนทับกันออก"""
     results = model(image_path)
     raw_centroids = []
 
@@ -84,6 +85,7 @@ def detect_and_filter_eyes(image_path, model, img_w, img_h, ratio=2.5):
     return filtered_centroids
 
 def calculate_accurate_spiral_angle(centroids, img_w, img_h):
+    """คำนวณมุมเกลียวสับปะรด (theta) ด้วยคณิตศาสตร์ Vector Regression"""
     if len(centroids) < 2:
         return None, None, None, None
 
@@ -124,6 +126,7 @@ def calculate_accurate_spiral_angle(centroids, img_w, img_h):
     return m_pixel, intercept, phi_deg, theta_deg
 
 def draw_visual_overlay(pil_img, centroids, slope, intercept, phi_deg, theta_deg):
+    """วาดจุดพิกัดตาและเส้นเวกเตอร์เกลียวบนภาพ"""
     img_copy = pil_img.copy()
     draw = PIL.ImageDraw.Draw(img_copy)
     w, h = img_copy.size
@@ -153,35 +156,41 @@ def draw_visual_overlay(pil_img, centroids, slope, intercept, phi_deg, theta_deg
 
     return img_copy
 
-def analyze_with_gemini(pil_img, theta_val, api_key):
+def analyze_and_classify_with_gemini(pil_img, theta_val, api_key):
+    """ให้ Gemini Vision ส่องภาพเพื่อจำแนกโมเดล และคำนวณ Brix จากค่า theta"""
     fast_img = pil_img.copy()
     fast_img.thumbnail((800, 800))
 
     genai.configure(api_key=api_key)
 
     prompt = f"""
-    คุณเป็นระบบวิเคราะห์ทางชีววิทยาและพฤกษศาสตร์สับปะรด
+    คุณเป็นระบบ AI ผู้เชี่ยวชาญด้านพฤกษศาสตร์และการจำแนกสายพันธุ์สับปะรด
     
-    ข้อมูลอินพุตจากระบบวัดมุมพิกัดจริง:
-    - มุมเกลียวสับปะรดที่คำนวณได้ (theta): {theta_val:.2f} องศา
+    ข้อมูลอินพุตมุมเกลียวที่วัดได้จริงจากคณิตศาสตร์:
+    - มุมเกลียวสับปะรด (theta) = {theta_val:.2f} องศา
     
-    หน้าที่ของคุณ:
-    1. วิเคราะห์รูปถ่ายสับปะรดเพื่อดูความหนาแน่น ขนาดตา และระยะห่างของร่องตา
-    2. ตัดสินใจเลือกแบบจำลองสับปะรดที่ถูกต้องระหว่าง:
-       - 'Model 5-8-13' (ตาใหญ่ ร่องตาห่าง มุมอุดมคติ 155 องศา)
-       - 'Model 8-13-21' (ตาเล็ก ร่องตาถี่อัดแน่น มุมอุดมคติ 136 องศา)
-    3. คำนวณค่าความหวาน (°Brix) ตามสมการ:
-       - หากเลือก Model 5-8-13: ให้คำนวณ x = |theta - 155| และ Brix = (-0.0196 * x^2) + (0.0045 * x) + 16.757
-       - หากเลือก Model 8-13-21: ให้คำนวณ x = |theta - 136| และ Brix = (0.0082 * x^2) - (0.6667 * x) + 16.362
+    ภารกิจของคุณ:
+    1. ส่องวิเคราะห์ลักษณะสับปะรดในภาพถ่ายอย่างละเอียด เพื่อจำแนกโมเดล:
+       - 'Model 5-8-13': มีลักษณะตาใหญ่ ร่องตาห่าง ร่องเกลียวชัดเจน (มุมอุดมคติ 155 องศา)
+       - 'Model 8-13-21': มีลักษณะตาเล็ก ถี่ อัดแน่น ร่องตาถี่มาก (มุมอุดมคติ 136 องศา)
     
-    โปรดระบุผลการวิเคราะห์สั้นๆ ชัดเจน สรุปว่าเลือกโมเดลใด พร้อมแสดงขั้นตอนคำนวณค่า °Brix ที่ได้
+    2. คำนวณค่าความหวาน (°Brix) ตามโมเดลที่ AI เลือกจำแนกได้:
+       - หากระบุว่าเป็น Model 5-8-13:
+         คำนวณ x = |{theta_val:.2f} - 155|
+         คำนวณ Brix = (-0.0196 * x^2) + (0.0045 * x) + 16.757
+       - หากระบุว่าเป็น Model 8-13-21:
+         คำนวณ x = |{theta_val:.2f} - 136|
+         คำนวณ Brix = (0.0082 * x^2) - (0.6667 * x) + 16.362
+
+    โปรดสรุปผลให้ชัดเจนดังนี้:
+    1. **โมเดลที่ AI เลือก:** (ระบุ Model 5-8-13 หรือ Model 8-13-21 พร้อมเหตุผลที่พิจารณาจากภาพ)
+    2. **ขั้นตอนการคำนวณ:** (แสดงการแทนค่า x และการคำนวณสมการ)
+    3. **ค่าความหวานประเมิน (°Brix):** (แสดงผลลัพธ์ตัวเลขสุดท้าย)
     """
 
-    # กำหนด gemini-3.6-flash เป็นอันดับแรก
-    candidate_models = [
-        "gemini-3.6-flash"
-    ]
-
+    # ใช้ตระกูล Flash ในการประมวลผล Vision
+    candidate_models = ["gemini-1.5-flash", "gemini-2.0-flash", "gemini-2.5-flash"]
+    
     last_error = None
     for m_name in candidate_models:
         try:
@@ -211,13 +220,15 @@ with col1:
         st.image(image, caption="รูปภาพต้นฉบับ", use_container_width=True)
 
 with col2:
-    st.subheader("2. ผลการวิเคราะห์")
+    st.subheader("2. ผลการวิเคราะห์ระบบ Hybrid AI")
 
     if uploaded_file is not None:
         if not GEMINI_KEY:
             st.warning("⚠️ กรุณากรอก Gemini API Key ในแถบด้านซ้ายก่อนเริ่มประมวลผล")
-        elif st.button("🚀 เริ่มประมวลผลระบบ Hybrid AI", type="primary"):
-            with st.spinner("กำลังตรวจจับพิกัดตา และคำนวณมุมเกลียว..."):
+        elif st.button("🚀 เริ่มตรวจจับ วัดมุม และจำแนกโมเดล", type="primary"):
+            
+            # Step 1: YOLO Detection
+            with st.spinner("1/3 กำลังตรวจจับตำแหน่งตาด้วย YOLO..."):
                 try:
                     yolo_model = load_yolo_model("best.pt")
                     centroids = detect_and_filter_eyes(temp_path, yolo_model, img_w, img_h, dist_threshold_ratio)
@@ -227,20 +238,23 @@ with col2:
                     centroids = []
 
             if len(centroids) < 2:
-                st.warning("⚠️ ตรวจจับตาได้น้อยกว่า 2 จุด ไม่สามารถคำนวณเส้นถดถอยได้")
+                st.warning("⚠️ ตรวจจับตาได้น้อยกว่า 2 จุด ไม่สามารถคำนวณมุมเกลียวได้")
             else:
+                # Step 2: Math Vector Calculation
                 slope, intercept, phi, theta = calculate_accurate_spiral_angle(centroids, img_w, img_h)
 
-                st.success(f"🟢 ตรวจจับตาได้ {len(centroids)} จุด | คำนวณมุมเกลียว θ = {theta:.1f}°")
+                st.success(f"🟢 ตรวจจับตาได้ {len(centroids)} จุด | มุมเกลียวที่คำนวณได้ θ = {theta:.1f}°")
 
                 overlay_img = draw_visual_overlay(image, centroids, slope, intercept, phi, theta)
-                st.image(overlay_img, caption=f"มุมเกลียวสับปะรด θ = {theta:.1f}°", use_container_width=True)
+                st.image(overlay_img, caption=f"พิกัดตาและมุมเกลียว θ = {theta:.1f}°", use_container_width=True)
 
-                with st.spinner("กำลังส่งข้อมูลให้ Gemini 3.6 Flash วิเคราะห์..."):
+                # Step 3: Gemini Vision Model Classification & Brix Calculation
+                with st.spinner("2/3 ส่งภาพให้ Gemini Vision วิเคราะห์จำแนกโมเดล และคำนวณ Brix..."):
                     try:
-                        gemini_result, used_model = analyze_with_gemini(image, theta, GEMINI_KEY)
+                        gemini_result, used_model = analyze_and_classify_with_gemini(image, theta, GEMINI_KEY)
                         st.caption(f"✨ ประมวลผลสำเร็จผ่านโมเดล: `{used_model}`")
-                        st.markdown("### 🤖 ผลการวิเคราะห์จาก Gemini")
+                        st.markdown("---")
+                        st.markdown("### 🤖 ผลการจำแนกโมเดลและประเมินค่าความหวาน")
                         st.write(gemini_result)
                     except Exception as e:
                         st.error("เกิดข้อผิดพลาดในการเรียก Gemini API:")
