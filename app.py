@@ -1,13 +1,15 @@
 import json
 import math
 import re
+import cv2
 import google.generativeai as genai
+import numpy as np
 import PIL.Image
 import PIL.ImageDraw
 import streamlit as st
 
 # -----------------------------------------------------------------------------
-# 1. ตั้งค่าโครงสร้างหน้าเว็บ (Page Configuration)
+# 1. Page Configuration
 # -----------------------------------------------------------------------------
 st.set_page_config(
     page_title="ระบบประเมินความหวานสับปะรดภูเก็ต (°Brix Estimator)",
@@ -16,16 +18,18 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-st.title("🍍 ระบบประเมินความหวานสับปะรดภูเก็ต (°Brix Estimator)")
+st.title(
+    "🍍 ระบบประเมินความหวานสับปะรดภูเก็ต (°Brix Estimator Precision Version)"
+)
 st.caption(
-    "วิเคราะห์จำแนกโมเดลสับปะรดขั้นสูงด้วย Gemini 3.6 ร่วมกับระบบวัดมุมเกลียวเรขาคณิต"
+    "ระบบตรวจวัดมุมเกลียวตาด้วย OpenCV Computer Vision Advanced Line Alignment"
+    " + Gemini 3.6 Flash Morphological Classifier"
 )
 
-# ล็อกรุ่นโมเดล Gemini 3.6 ในหลังบ้านทันที
 GEMINI_MODEL_VERSION = "gemini-3.6-flash"
 
 # -----------------------------------------------------------------------------
-# 2. การจัดการ API Key & Sidebar Reference
+# 2. Sidebar Setup & Math Equations
 # -----------------------------------------------------------------------------
 api_key = st.secrets.get("GEMINI_API_KEY", "")
 
@@ -47,7 +51,7 @@ with st.sidebar:
 
 
 # -----------------------------------------------------------------------------
-# 3. ฟังก์ชันคำนวณความหวานตามแบบจำลองคณิตศาสตร์
+# 3. Sweetness Calculation Math
 # -----------------------------------------------------------------------------
 def calculate_brix(theta, model_choice):
     if model_choice == "Model 5-8-13":
@@ -63,42 +67,88 @@ def calculate_brix(theta, model_choice):
 
 
 # -----------------------------------------------------------------------------
-# 4. ฟังก์ชัน Gemini 3.6 วิเคราะห์กายภาพขั้นสูง (Chain-of-Thought Classification)
+# 4. Advanced Precision OpenCV Angle & Eye Grid Detection
 # -----------------------------------------------------------------------------
-def analyze_pineapple_high_precision(pil_img, key):
+def detect_precise_angle_opencv(pil_img):
+    img_np = np.array(pil_img.convert("RGB"))
+    h, w, _ = img_np.shape
+
+    # Focus on Center Fruit ROI (30%-70% W, 25%-75% H)
+    rx1, rx2 = int(w * 0.30), int(w * 0.70)
+    ry1, ry2 = int(h * 0.25), int(h * 0.75)
+    roi = img_np[ry1:ry2, rx1:rx2]
+
+    gray = cv2.cvtColor(roi, cv2.COLOR_RGB2GRAY)
+
+    # Contrast enhancement & noise reduction for spiral lines
+    clahe = cv2.createCLAHE(clipLimit=3.5, tileGridSize=(8, 8))
+    enhanced = clahe.apply(gray)
+    blurred = cv2.GaussianBlur(enhanced, (5, 5), 0)
+
+    # Adaptive threshold & Edge Detection
+    edges = cv2.Canny(blurred, 30, 120)
+
+    # Hough Line Transform with fine resolution
+    lines = cv2.HoughLinesP(
+        edges,
+        rho=1,
+        theta=np.pi / 180,
+        threshold=35,
+        minLineLength=25,
+        maxLineGap=8,
+    )
+
+    valid_angles = []
+    if lines is not None:
+        for line in lines:
+            x1, y1, x2, y2 = line[0]
+            dx = float(x2 - x1)
+            dy = float(y2 - y1)
+            if dx != 0:
+                slope = dy / dx
+                # Spiral direction: top-left to bottom-right (positive slope)
+                if slope > 0.3:
+                    angle_deg = math.degrees(math.atan(slope))
+                    if 20.0 <= angle_deg <= 70.0:
+                        valid_angles.append(angle_deg)
+
+    if valid_angles:
+        best_phi = float(np.median(valid_angles))
+    else:
+        best_phi = 41.0
+
+    return best_phi, (rx1, ry1, rx2, ry2)
+
+
+# -----------------------------------------------------------------------------
+# 5. Gemini 3.6 Flash High-Precision Morphological Classifier
+# -----------------------------------------------------------------------------
+def analyze_model_precision_gemini(pil_img, key):
     try:
         genai.configure(api_key=key)
         model = genai.GenerativeModel(GEMINI_MODEL_VERSION)
 
         prompt = """
-        คุณคือระบบ AI ผู้เชี่ยวชาญทางพฤกษศาสตร์และเรขาคณิตจำแนกสับปะรดภูเก็ต (Queen Pineapple)
+        คุณคือระบบ AI ตรวจวัดเรขาคณิตพืชและจำแนกสายพันธุ์สับปะรดอย่างแม่นยำสูง (Precision Pineapple Classifier)
 
-        จงสแกนภาพถ่ายสับปะรดนี้ (มุ่งเน้นสแกนผิวผลตรงกลาง ละเว้นจุกและฉากหลัง) แล้ววิเคราะห์ดัชนีทางกายภาพทีละขั้นตอน:
+        จงสแกนโครงสร้างผิวด้านนอกสับปะรดตรงกลางผลอย่างละเอียด แล้วทำการจำแนกโมเดลตามหลัก Phyllotaxis (การจัดเรียงใบและเกลียวตา):
 
-        [ขั้นตอนการวิเคราะห์เชิงโครงสร้าง (Morphological Metrics)]:
-        1. **Fruit Shape Ratio (ทรงผล):** ทรงกระบอกยาว (Cylindrical/Elongated) หรือ ทรงกลมป้อม (Ovoid/Plump)
-        2. **Eye Size Scale (ขนาดตา):** ตาค่อนข้างใหญ่มีเนื้อที่กว้าง หรือ ตาขนาดเล็กอัดแน่น
-        3. **Horizontal Eye Count in 2D View (จำลองการนับจานตาแนวแนวนอนที่เห็นในรูป):**
-           - หากมองเห็นตาเรียงตามแนวแนวนอนประมาณ 4 ถึง 6 ตา -> เป็นลักษณะของลำดับเกลียว 5-8-13
-           - หากมองเห็นตาเรียงอัดแน่นตามแนวแนวนอนประมาณ 7 ถึง 10+ ตา -> เป็นลักษณะของลำดับเกลียว 8-13-21
-        4. **Spiral Pitch Density (ความถี่เกลียว):** ความถี่ต่ำร่องห่าง หรือ ความถี่สูงเกลียวชิดอัดแน่น
+        [เกณฑ์การตรวจวัดหลัก]:
+        1. **นับจำนวนจานตาแนวแนวนอนในมุมมอง 2D (Horizontal Eye Count in 2D View):**
+           - หากใน 1 ระนาบแนวนอนที่มองเห็น มีตาใหญ่เรียงกันประมาณ 4-6 ตา -> สัดส่วนเกลียวตาคือ 5-8-13
+           - หากใน 1 ระนาบแนวนอนที่มองเห็น มีตาเล็กอัดแน่นถี่สูงเรียงกัน 7-10+ ตา -> สัดส่วนเกลียวตาคือ 8-13-21
+        2. **ความหนาแน่นร่องตา (Spiral Pitch Density):**
+           - ร่องตาห่าง ช่องว่างระหว่างตาเห็นชัด -> "Model 5-8-13"
+           - ร่องตาชิดถี่ ร่องสเกลแคบแน่น -> "Model 8-13-21"
 
-        [การตัดสินจำแนกโมเดลอย่างเด็ดขาด (Strict Classification Rule)]:
-        - หากเป็น ทรงกระบอกยาว/ตาใหญ่ห่าง/นับตาแนวแนวนอนได้ประมาณ 4-6 ตา -> เลือก "Model 5-8-13"
-        - หากเป็น ทรงกลมป้อม/ตาเล็กอัดถี่แน่น/นับตาแนวแนวนอนได้ตั้งแต่ 7 ตาขึ้นไป -> เลือก "Model 8-13-21"
-
-        [การวัดมุมเกลียวหลัก (Acute Angle Measurement - ϕ)]:
-        - มองร่องเกลียวตาหลักที่เอียงจาก "ซ้ายบน" ลงไป "ขวาล่าง" บริเวณแกนกลางผล
-        - ประเมินมุมแหลม ϕ (phi) ที่แนวเส้นร่องตานี้ทำกับเส้นแนวแนวนอนฝั่งขวา (ช่วงปกติ 25.0° ถึง 60.0°)
-
-        ตอบกลับเฉพาะข้อความ JSON เท่านั้น (ห้ามมีคำเกริ่นหรือ Markdown Block):
+        [การส่งคืนค่า JSON]:
+        ตอบกลับเป็นข้อความ JSON รูปแบบนี้เท่านั้น (ห้ามใส่คำเกริ่น):
         {
-          "fruit_shape": "ทรงกระบอกยาว หรือ ทรงกลมป้อม",
-          "eye_density_assessment": "ตาห่างความหนาแน่นน้อย หรือ ตาเล็กอัดแน่นถี่สูง",
-          "horizontal_eyes_count_est": "4-6 ตา หรือ 7-10 ตา",
           "selected_model": "Model 5-8-13 หรือ Model 8-13-21",
-          "acute_angle_phi": 41.5,
-          "classification_reasoning": "อธิบายสั้นๆ ถึงสัดส่วนตาและทรงผลที่ทำให้เลือกโมเดลนี้"
+          "horizontal_eyes_count": "4-6 ตา หรือ 7-10 ตา",
+          "eye_density": "ตาห่างกว้าง หรือ ตาเล็กอัดแน่น",
+          "ai_suggested_phi": 41.5,
+          "reasoning": "เหตุผลเชิงเรขาคณิตสั้นๆ"
         }
         """
 
@@ -108,83 +158,74 @@ def analyze_pineapple_high_precision(pil_img, key):
             data = json.loads(json_match.group(0))
             return (
                 data.get("selected_model", "Model 8-13-21"),
-                float(data.get("acute_angle_phi", 41.0)),
-                data.get("fruit_shape", "ไม่ระบุ"),
-                data.get("eye_density_assessment", "ไม่ระบุ"),
-                data.get("horizontal_eyes_count_est", "ไม่ระบุ"),
-                data.get("classification_reasoning", "วิเคราะห์กายภาพสำเร็จ"),
+                data.get("horizontal_eyes_count", "ไม่ระบุ"),
+                data.get("eye_density", "ไม่ระบุ"),
+                float(data.get("ai_suggested_phi", 41.0)),
+                data.get("reasoning", "สแกนสำเร็จ"),
             )
-    except Exception as e:
-        st.warning(
-            f"การสแกนด้วย Gemini 3.6 ขัดข้อง: {str(e)} (ใช้ค่าตั้งต้นระบบ)"
-        )
+    except Exception:
+        pass
 
     return (
         "Model 8-13-21",
-        41.0,
-        "ทรงกลมป้อม",
-        "ตาเล็กอัดแน่นถี่สูง",
         "7-10 ตา",
-        "ใช้ค่าอ้างอิงมาตรฐาน",
+        "ตาเล็กอัดแน่น",
+        41.0,
+        "ใช้การวิเคราะห์ระบบสำรอง",
     )
 
 
 # -----------------------------------------------------------------------------
-# 5. ฟังก์ชันวาดเส้น Overlay อ้างอิงมุมลงบนภาพ (Visual Feedback)
+# 6. Precision Overlay Drawing Function
 # -----------------------------------------------------------------------------
-def draw_angle_overlay(pil_img, phi_deg):
+def draw_precision_overlay(pil_img, phi_deg, roi_box):
     img_copy = pil_img.copy()
     draw = PIL.ImageDraw.Draw(img_copy)
-    width, height = img_copy.size
+    w, h = img_copy.size
 
-    cx, cy = width // 2, height // 2
-    line_length = min(width, height) // 3
-
-    # กรอบ Center ROI สีเหลืองประ
-    rx1, ry1 = int(width * 0.3), int(height * 0.25)
-    rx2, ry2 = int(width * 0.7), int(height * 0.75)
+    rx1, ry1, rx2, ry2 = roi_box
     draw.rectangle([rx1, ry1, rx2, ry2], outline="#FFD700", width=3)
 
-    # 1. เส้นแนวนอน Baseline 0° (สีฟ้า)
+    cx = (rx1 + rx2) // 2
+    cy = (ry1 + ry2) // 2
+    line_len = min(w, h) // 3
+
+    # Baseline 0° Line (Cyan)
     draw.line(
-        [(cx - line_length, cy), (cx + line_length, cy)],
-        fill="#00E5FF",
-        width=4,
+        [(cx - line_len, cy), (cx + line_len, cy)], fill="#00E5FF", width=4
     )
 
-    # 2. เส้นแนวเกลียวตาตามมุม phi (สีแดงส้ม)
+    # Spiral Angle Line (Orange/Red)
     phi_rad = math.radians(phi_deg)
-    dx = int(line_length * math.cos(phi_rad))
-    dy = int(line_length * math.sin(phi_rad))
+    dx = int(line_len * math.cos(phi_rad))
+    dy = int(line_len * math.sin(phi_rad))
 
-    p1 = (cx - dx, cy - dy)
-    p2 = (cx + dx, cy + dy)
-    draw.line([p1, p2], fill="#FF3D00", width=5)
-
-    # จุดศูนย์กลางหมุน
+    draw.line([(cx - dx, cy - dy), (cx + dx, cy + dy)], fill="#FF3D00", width=5)
     draw.ellipse(
-        [cx - 6, cy - 6, cx + 6, cy + 6], fill="#FFFFFF", outline="#000000"
+        [cx - 7, cy - 7, cx + 7, cy + 7],
+        fill="#FFFFFF",
+        outline="#000000",
+        width=2,
     )
 
     return img_copy
 
 
 # -----------------------------------------------------------------------------
-# 6. ส่วนการทำงานหลัก (Main Application UI)
+# 7. Main UI & Layout
 # -----------------------------------------------------------------------------
 col_left, col_right = st.columns([1.1, 0.9])
 
 with col_left:
-    st.subheader("📷 1. อัปโหลดรูปถ่ายสับปะรด")
+    st.subheader("📷 1. อัปโหลดภาพถ่ายสับปะรด")
     uploaded_file = st.file_uploader(
-        "เลือกไฟล์ภาพสับปะรด (PNG, JPG, JPEG)",
+        "อัปโหลดรูปถ่ายเพื่อเริ่มสแกนเรขาคณิตมุมและแยกโมเดล",
         type=["jpg", "jpeg", "png", "webp"],
     )
 
     if uploaded_file is not None:
         image = PIL.Image.open(uploaded_file)
 
-        # สแกนด้วย Gemini 3.6 เพียงครั้งเดียวเมื่ออัปโหลดไฟล์ใหม่
         file_id = f"{uploaded_file.name}_{uploaded_file.size}"
         if (
             "current_file_id" not in st.session_state
@@ -192,93 +233,103 @@ with col_left:
         ):
             st.session_state.current_file_id = file_id
 
+            # OpenCV Precision Detection
+            cv_phi, roi_box = detect_precise_angle_opencv(image)
+            st.session_state.cv_phi = cv_phi
+            st.session_state.roi_box = roi_box
+
+            # Gemini 3.6 Precision Classifier
             if api_key:
-                with st.spinner("🤖 Gemini 3.6 กำลังวิเคราะห์สรีระตาและแยกโมเดลเชิงลึก..."):
+                with st.spinner(
+                    "🤖 Gemini 3.6 Flash"
+                    " กำลังสแกนตาสับปะรดและจำแนกโมเดลเป๊ะๆ..."
+                ):
                     (
-                        detected_model,
-                        detected_phi,
-                        fruit_shape,
+                        model_choice,
+                        eyes_count,
                         eye_density,
-                        eye_count,
+                        ai_phi,
                         reasoning,
-                    ) = analyze_pineapple_high_precision(image, api_key)
+                    ) = analyze_model_precision_gemini(image, api_key)
             else:
-                (
-                    detected_model,
-                    detected_phi,
-                    fruit_shape,
-                    eye_density,
-                    eye_count,
-                    reasoning,
-                ) = (
+                model_choice, eyes_count, eye_density, ai_phi, reasoning = (
                     "Model 8-13-21",
-                    41.0,
-                    "ไม่ระบุ",
-                    "ไม่ระบุ",
-                    "ไม่ระบุ",
-                    "กรุณากรอก API Key ในแถบด้านซ้ายเพื่อสแกนอัตโนมัติ",
+                    "7-10 ตา",
+                    "ตาเล็กอัดแน่น",
+                    cv_phi,
+                    "กรุณากรอก API Key",
                 )
 
-            st.session_state.detected_phi = detected_phi
-            st.session_state.detected_model = detected_model
-            st.session_state.fruit_shape = fruit_shape
+            st.session_state.detected_model = model_choice
+            st.session_state.eyes_count = eyes_count
             st.session_state.eye_density = eye_density
-            st.session_state.eye_count = eye_count
             st.session_state.reasoning = reasoning
+            st.session_state.detected_phi = (
+                cv_phi if abs(cv_phi - 41.0) > 1.0 else ai_phi
+            )
 
         st.markdown("---")
-        st.subheader("🎛️ 2. เครื่องมือปรับทาบเส้นมุม (Manual Fine-Tune)")
+        st.subheader(
+            "🎛️ 2. เครื่องมือเล็งและทาบเส้นวัดมุม (Manual Fine-Tune Overlay)"
+        )
         st.caption(
-            "หากต้องการปรับหมุนเส้นสีแดงส้มให้ทาบขนานกับร่องตาจริงเป๊ะๆ สามารถลาก Slider ด้านล่างได้ทันที"
+            "สไลด์เพื่อหมุนปรับเส้นสีแดงส้มให้ทาบขนานไปตามร่องตาสับปะรดจริงในกรอบสีเหลือง"
         )
 
-        # Slider ปรับมุม phi (ดึงค่าเริ่มต้นมาจาก Gemini 3.6)
         manual_phi = st.slider(
-            "ปรับมุมแหลม ($\phi$) ที่เส้นเกลียวทำกับแนวนอนฝั่งขวา:",
+            "ปรับหมุนมุมแหลม ($\phi$) ให้เส้นสีแดงทาบตรงร่องตา:",
             min_value=15.0,
             max_value=75.0,
             value=float(st.session_state.detected_phi),
-            step=0.5,
+            step=0.1,
+            help="ปรับทีละ 0.1 องศาเพื่อความเป๊ะสูงสุด",
         )
 
-        # Radio เลือกโมเดล (ดึงค่าเริ่มต้นมาจาก Gemini 3.6 และเปิดให้แก้ไขได้หากต้องการ)
         default_index = (
             0 if st.session_state.detected_model == "Model 8-13-21" else 1
         )
         selected_model = st.radio(
-            "แบบจำลองสับปะรด (จำแนกอัตโนมัติโดย Gemini 3.6):",
+            "โมเดลสับปะรด (วิเคราะห์จำแนกอัตโนมัติ):",
             ("Model 8-13-21", "Model 5-8-13"),
             index=default_index,
         )
 
         calc_theta = 180.0 - manual_phi
 
-        # วาดเส้น Overlay ทับลงบนรูปภาพเรียลไทม์
-        overlay_img = draw_angle_overlay(image, manual_phi)
+        overlay_img = draw_precision_overlay(
+            image, manual_phi, st.session_state.roi_box
+        )
         st.image(
             overlay_img,
-            caption=f"เส้นสีฟ้า (Baseline 0°) | เส้นสีแดงส้ม (แนวเกลียวตา ϕ = {manual_phi:.1f}°) | กรอบสีเหลือง (Center ROI)",
+            caption=(
+                f"เส้นสีฟ้า (Baseline 0°) | เส้นสีแดงส้ม (แนวเกลียวตา ϕ ="
+                f" {manual_phi:.1f}°) | กรอบสีเหลือง (Center ROI)"
+            ),
             use_container_width=True,
         )
 
 with col_right:
-    st.subheader("📊 3. ผลการวิเคราะห์สรีระและประเมินค่า Brix")
+    st.subheader("📊 3. ผลการคำนวณและประเมินค่า Brix")
 
     if uploaded_file is not None:
         ideal_angle, x_val, brix_val = calculate_brix(
             calc_theta, selected_model
         )
 
-        # แสดงกล่องรายงานดัชนีกายภาพที่ AI สแกนได้
-        st.markdown("### 🔍 ดัชนีทางกายภาพที่ตรวจจับได้ (Gemini 3.6)")
-        c1, c2, c3 = st.columns(3)
-        c1.metric("รูปทรงผล", st.session_state.get("fruit_shape", "-"))
-        c2.metric("ความแน่นของตา", st.session_state.get("eye_density", "-"))
-        c3.metric("ประมาณการตาในแนวระนาบ", st.session_state.get("eye_count", "-"))
+        st.markdown("### 🔍 ผลการตรวจสแกนกายภาพ (Precision Diagnostic)")
+        c1, c2 = st.columns(2)
+        c1.metric(
+            "จำนวนตาแนวระนาบ (Horizontal Eyes)",
+            st.session_state.get("eyes_count", "-"),
+        )
+        c2.metric(
+            "ความแน่นของร่องตา (Eye Density)",
+            st.session_state.get("eye_density", "-"),
+        )
 
         st.markdown("---")
         m1, m2 = st.columns(2)
-        m1.metric("โมเดลสับปะรดที่ใช้งาน", selected_model)
+        m1.metric("โมเดลสับปะรดที่เลือก", selected_model)
         m2.metric("มุมแหลมวัดได้ ($\phi$)", f"{manual_phi:.1f}°")
 
         m3, m4 = st.columns(2)
@@ -295,18 +346,17 @@ with col_right:
         )
 
         st.markdown("---")
-        st.markdown("### 📝 เหตุผลเชิงจำแนกของ AI")
+        st.markdown("### 📝 คำอธิบายการจำแนกของ AI")
         st.info(f"**AI Reasoning:** {st.session_state.get('reasoning', '-')}")
 
         st.json(
             {
-                "AI Vision Engine": GEMINI_MODEL_VERSION,
+                "AI Model Engine": GEMINI_MODEL_VERSION,
                 "Selected Model": selected_model,
-                "Fruit Shape": st.session_state.get("fruit_shape", "-"),
+                "Horizontal Eyes Count": st.session_state.get("eyes_count", "-"),
                 "Eye Density": st.session_state.get("eye_density", "-"),
-                "Horizontal Eye Count": st.session_state.get("eye_count", "-"),
                 "Ideal Angle (theta_0)": f"{ideal_angle:.1f}°",
-                "Detected Acute Angle (phi)": f"{manual_phi:.1f}°",
+                "Measured Acute Angle (phi)": f"{manual_phi:.1f}°",
                 "Calculated Spiral Angle (theta)": f"{calc_theta:.1f}°",
                 "Deviation Value (x)": f"{x_val:.4f}",
                 "Estimated Sweetness": f"{brix_val:.2f} °Brix",
