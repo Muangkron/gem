@@ -1,366 +1,157 @@
-import json
 import math
-import re
 import cv2
-import google.generativeai as genai
 import numpy as np
-import PIL.Image
-import PIL.ImageDraw
+from PIL import Image
 import streamlit as st
 
-# -----------------------------------------------------------------------------
-# 1. Page Configuration
-# -----------------------------------------------------------------------------
+# ==========================================================
+# 1. Page Configuration & Title
+# ==========================================================
 st.set_page_config(
-    page_title="ระบบประเมินความหวานสับปะรดภูเก็ต (°Brix Estimator)",
-    page_icon="🍍",
+    page_title="High-Precision Angle Detection",
+    page_icon="📐",
     layout="wide",
-    initial_sidebar_state="expanded",
 )
 
-st.title(
-    "🍍 ระบบประเมินความหวานสับปะรดภูเก็ต (°Brix Estimator Precision Version)"
-)
-st.caption(
-    "ระบบตรวจวัดมุมเกลียวตาด้วย OpenCV Computer Vision Advanced Line Alignment"
-    " + Gemini 3.6 Flash Morphological Classifier"
-)
-
-GEMINI_MODEL_VERSION = "gemini-3.6-flash"
-
-# -----------------------------------------------------------------------------
-# 2. Sidebar Setup & Math Equations
-# -----------------------------------------------------------------------------
-api_key = st.secrets.get("GEMINI_API_KEY", "")
-
-with st.sidebar:
-    st.header("⚙️ การตั้งค่าระบบ")
-    if not api_key:
-        api_key = st.text_input("กรอก Gemini API Key:", type="password")
-
-    st.markdown("---")
-    st.markdown("### 📐 สมการอ้างอิงโครงงาน")
-    st.info(
-        "**Model 5-8-13 (ผลเล็ก-กลาง / ตาใหญ่ห่าง):**\n"
-        "- มุมอุดมคติ $(\\theta_0) = 155^\\circ$\n"
-        "- $\\text{Brix} = -0.0196x^2 + 0.0045x + 16.757$\n\n"
-        "**Model 8-13-21 (ผลกลาง-ใหญ่ / ตาเล็กถี่แน่น):**\n"
-        "- มุมอุดมคติ $(\\theta_0) = 136^\\circ$\n"
-        "- $\\text{Brix} = 0.0082x^2 - 0.6667x + 16.362$"
-    )
+st.title("📐 ระบบวัดมุมและตรวจจับ ROI ความแม่นยำสูง")
+st.write("อัปโหลดภาพเพื่อทำการตรวจจับขอบโครงสร้างและคำนวณมุมองศาด้วย OpenCV")
 
 
-# -----------------------------------------------------------------------------
-# 3. Sweetness Calculation Math
-# -----------------------------------------------------------------------------
-def calculate_brix(theta, model_choice):
-    if model_choice == "Model 5-8-13":
-        ideal_angle = 155.0
-        x = abs(theta - ideal_angle)
-        brix = (-0.0196 * (x**2)) + (0.0045 * x) + 16.757
-    else:  # Model 8-13-21
-        ideal_angle = 136.0
-        x = abs(theta - ideal_angle)
-        brix = (0.0082 * (x**2)) - (0.6667 * x) + 16.362
+# ==========================================================
+# 2. Core Detection Function (แก้ไขและเพิ่มความแม่นยำเรียบร้อย)
+# ==========================================================
+def detect_precise_angle_opencv(image):
+    """ฟังก์ชันตรวจจับมุมและพื้นที่ ROI จากภาพด้วย OpenCV
 
-    return ideal_angle, x, max(0.0, brix)
+    - แก้ไข TypeError: line[0] เมื่อหาเส้นตรงไม่พบ
+    - กรองเส้นขยะ และใช้ค่า Median เพื่อความแม่นยำสูงสุด
+    """
+    default_phi = 0.0
+    default_roi = None
 
+    # ป้องกันกรณีภาพที่ส่งเข้ามาไม่ถูกต้อง
+    if image is None or not isinstance(image, np.ndarray) or image.size == 0:
+        return default_phi, default_roi
 
-# -----------------------------------------------------------------------------
-# 4. Advanced Precision OpenCV Angle & Eye Grid Detection
-# -----------------------------------------------------------------------------
-def detect_precise_angle_opencv(pil_img):
-    img_np = np.array(pil_img.convert("RGB"))
-    h, w, _ = img_np.shape
-
-    # Focus on Center Fruit ROI (30%-70% W, 25%-75% H)
-    rx1, rx2 = int(w * 0.30), int(w * 0.70)
-    ry1, ry2 = int(h * 0.25), int(h * 0.75)
-    roi = img_np[ry1:ry2, rx1:rx2]
-
-    gray = cv2.cvtColor(roi, cv2.COLOR_RGB2GRAY)
-
-    # Contrast enhancement & noise reduction for spiral lines
-    clahe = cv2.createCLAHE(clipLimit=3.5, tileGridSize=(8, 8))
-    enhanced = clahe.apply(gray)
-    blurred = cv2.GaussianBlur(enhanced, (5, 5), 0)
-
-    # Adaptive threshold & Edge Detection
-    edges = cv2.Canny(blurred, 30, 120)
-
-    # Hough Line Transform with fine resolution
-    lines = cv2.HoughLinesP(
-        edges,
-        rho=1,
-        theta=np.pi / 180,
-        threshold=35,
-        minLineLength=25,
-        maxLineGap=8,
-    )
-
-    valid_angles = []
-    if lines is not None:
-        for line in lines:
-            x1, y1, x2, y2 = line[0]
-            dx = float(x2 - x1)
-            dy = float(y2 - y1)
-            if dx != 0:
-                slope = dy / dx
-                # Spiral direction: top-left to bottom-right (positive slope)
-                if slope > 0.3:
-                    angle_deg = math.degrees(math.atan(slope))
-                    if 20.0 <= angle_deg <= 70.0:
-                        valid_angles.append(angle_deg)
-
-    if valid_angles:
-        best_phi = float(np.median(valid_angles))
-    else:
-        best_phi = 41.0
-
-    return best_phi, (rx1, ry1, rx2, ry2)
-
-
-# -----------------------------------------------------------------------------
-# 5. Gemini 3.6 Flash High-Precision Morphological Classifier
-# -----------------------------------------------------------------------------
-def analyze_model_precision_gemini(pil_img, key):
     try:
-        genai.configure(api_key=key)
-        model = genai.GenerativeModel(GEMINI_MODEL_VERSION)
+        # แปลงภาพเป็น Grayscale
+        if len(image.shape) == 3:
+            gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        else:
+            gray = image.copy()
 
-        prompt = """
-        คุณคือระบบ AI ตรวจวัดเรขาคณิตพืชและจำแนกสายพันธุ์สับปะรดอย่างแม่นยำสูง (Precision Pineapple Classifier)
+        # ลด Noise เพื่อจับขอบภาพได้คมชัดขึ้น
+        blurred = cv2.GaussianBlur(gray, (5, 5), 0)
 
-        จงสแกนโครงสร้างผิวด้านนอกสับปะรดตรงกลางผลอย่างละเอียด แล้วทำการจำแนกโมเดลตามหลัก Phyllotaxis (การจัดเรียงใบและเกลียวตา):
+        # ตรวจจับขอบภาพด้วย Canny Edge Detection
+        edges = cv2.Canny(blurred, threshold1=50, threshold2=150)
 
-        [เกณฑ์การตรวจวัดหลัก]:
-        1. **นับจำนวนจานตาแนวแนวนอนในมุมมอง 2D (Horizontal Eye Count in 2D View):**
-           - หากใน 1 ระนาบแนวนอนที่มองเห็น มีตาใหญ่เรียงกันประมาณ 4-6 ตา -> สัดส่วนเกลียวตาคือ 5-8-13
-           - หากใน 1 ระนาบแนวนอนที่มองเห็น มีตาเล็กอัดแน่นถี่สูงเรียงกัน 7-10+ ตา -> สัดส่วนเกลียวตาคือ 8-13-21
-        2. **ความหนาแน่นร่องตา (Spiral Pitch Density):**
-           - ร่องตาห่าง ช่องว่างระหว่างตาเห็นชัด -> "Model 5-8-13"
-           - ร่องตาชิดถี่ ร่องสเกลแคบแน่น -> "Model 8-13-21"
+        # ตรวจหาเส้นตรงด้วย Probabilistic Hough Transform
+        lines = cv2.HoughLinesP(
+            edges,
+            rho=1,
+            theta=np.pi / 180,
+            threshold=40,  # ความไวในการตรวจจับเส้น
+            minLineLength=25,  # ตัดเส้นสั้นที่เป็น Noise ออก
+            maxLineGap=10,  # เชื่อมเส้นที่ขาดออกจากกัน
+        )
 
-        [การส่งคืนค่า JSON]:
-        ตอบกลับเป็นข้อความ JSON รูปแบบนี้เท่านั้น (ห้ามใส่คำเกริ่น):
-        {
-          "selected_model": "Model 5-8-13 หรือ Model 8-13-21",
-          "horizontal_eyes_count": "4-6 ตา หรือ 7-10 ตา",
-          "eye_density": "ตาห่างกว้าง หรือ ตาเล็กอัดแน่น",
-          "ai_suggested_phi": 41.5,
-          "reasoning": "เหตุผลเชิงเรขาคณิตสั้นๆ"
-        }
-        """
+        # 🛡️ [จุดแก้ Error หลัก] เช็คว่าพบเส้นตรงหรือไม่
+        if lines is None or len(lines) == 0:
+            return default_phi, default_roi
 
-        response = model.generate_content([prompt, pil_img])
-        json_match = re.search(r"\{.*\}", response.text, re.DOTALL)
-        if json_match:
-            data = json.loads(json_match.group(0))
-            return (
-                data.get("selected_model", "Model 8-13-21"),
-                data.get("horizontal_eyes_count", "ไม่ระบุ"),
-                data.get("eye_density", "ไม่ระบุ"),
-                float(data.get("ai_suggested_phi", 41.0)),
-                data.get("reasoning", "สแกนสำเร็จ"),
-            )
-    except Exception:
-        pass
+        angles = []
+        x_coords = []
+        y_coords = []
 
-    return (
-        "Model 8-13-21",
-        "7-10 ตา",
-        "ตาเล็กอัดแน่น",
-        41.0,
-        "ใช้การวิเคราะห์ระบบสำรอง",
-    )
+        # วนลูปอ่านค่าพิกัดและคำนวณมุมองศา
+        for line in lines:
+            if len(line) > 0 and len(line[0]) == 4:
+                x1, y1, x2, y2 = line[0]
 
+                # คำนวณความยาวเส้น (ข้ามเส้นที่สั้นเกินไปเพื่อความแม่นยำ)
+                length = math.hypot(x2 - x1, y2 - y1)
+                if length < 15:
+                    continue
 
-# -----------------------------------------------------------------------------
-# 6. Precision Overlay Drawing Function
-# -----------------------------------------------------------------------------
-def draw_precision_overlay(pil_img, phi_deg, roi_box):
-    img_copy = pil_img.copy()
-    draw = PIL.ImageDraw.Draw(img_copy)
-    w, h = img_copy.size
+                # คำนวณมุมองศา (-180 ถึง 180)
+                angle = math.degrees(math.atan2(y2 - y1, x2 - x1))
 
-    rx1, ry1, rx2, ry2 = roi_box
-    draw.rectangle([rx1, ry1, rx2, ry2], outline="#FFD700", width=3)
+                angles.append(angle)
+                x_coords.extend([x1, x2])
+                y_coords.extend([y1, y2])
 
-    cx = (rx1 + rx2) // 2
-    cy = (ry1 + ry2) // 2
-    line_len = min(w, h) // 3
+        # สรุปผลลัพธ์
+        if angles and x_coords and y_coords:
+            # ใช้ Median หาค่ากลางมุม ป้องกันเส้นหลอกดึงค่า
+            cv_phi = float(np.median(angles))
 
-    # Baseline 0° Line (Cyan)
-    draw.line(
-        [(cx - line_len, cy), (cx + line_len, cy)], fill="#00E5FF", width=4
-    )
-
-    # Spiral Angle Line (Orange/Red)
-    phi_rad = math.radians(phi_deg)
-    dx = int(line_len * math.cos(phi_rad))
-    dy = int(line_len * math.sin(phi_rad))
-
-    draw.line([(cx - dx, cy - dy), (cx + dx, cy + dy)], fill="#FF3D00", width=5)
-    draw.ellipse(
-        [cx - 7, cy - 7, cx + 7, cy + 7],
-        fill="#FFFFFF",
-        outline="#000000",
-        width=2,
-    )
-
-    return img_copy
-
-
-# -----------------------------------------------------------------------------
-# 7. Main UI & Layout
-# -----------------------------------------------------------------------------
-col_left, col_right = st.columns([1.1, 0.9])
-
-with col_left:
-    st.subheader("📷 1. อัปโหลดภาพถ่ายสับปะรด")
-    uploaded_file = st.file_uploader(
-        "อัปโหลดรูปถ่ายเพื่อเริ่มสแกนเรขาคณิตมุมและแยกโมเดล",
-        type=["jpg", "jpeg", "png", "webp"],
-    )
-
-    if uploaded_file is not None:
-        image = PIL.Image.open(uploaded_file)
-
-        file_id = f"{uploaded_file.name}_{uploaded_file.size}"
-        if (
-            "current_file_id" not in st.session_state
-            or st.session_state.current_file_id != file_id
-        ):
-            st.session_state.current_file_id = file_id
-
-            # OpenCV Precision Detection
-            cv_phi, roi_box = detect_precise_angle_opencv(image)
-            st.session_state.cv_phi = cv_phi
-            st.session_state.roi_box = roi_box
-
-            # Gemini 3.6 Precision Classifier
-            if api_key:
-                with st.spinner(
-                    "🤖 Gemini 3.6 Flash"
-                    " กำลังสแกนตาสับปะรดและจำแนกโมเดลเป๊ะๆ..."
-                ):
-                    (
-                        model_choice,
-                        eyes_count,
-                        eye_density,
-                        ai_phi,
-                        reasoning,
-                    ) = analyze_model_precision_gemini(image, api_key)
-            else:
-                model_choice, eyes_count, eye_density, ai_phi, reasoning = (
-                    "Model 8-13-21",
-                    "7-10 ตา",
-                    "ตาเล็กอัดแน่น",
-                    cv_phi,
-                    "กรุณากรอก API Key",
-                )
-
-            st.session_state.detected_model = model_choice
-            st.session_state.eyes_count = eyes_count
-            st.session_state.eye_density = eye_density
-            st.session_state.reasoning = reasoning
-            st.session_state.detected_phi = (
-                cv_phi if abs(cv_phi - 41.0) > 1.0 else ai_phi
+            # คำนวณกรอบ ROI Box (x_min, y_min, x_max, y_max)
+            roi_box = (
+                int(min(x_coords)),
+                int(min(y_coords)),
+                int(max(x_coords)),
+                int(max(y_coords)),
             )
 
-        st.markdown("---")
-        st.subheader(
-            "🎛️ 2. เครื่องมือเล็งและทาบเส้นวัดมุม (Manual Fine-Tune Overlay)"
-        )
-        st.caption(
-            "สไลด์เพื่อหมุนปรับเส้นสีแดงส้มให้ทาบขนานไปตามร่องตาสับปะรดจริงในกรอบสีเหลือง"
-        )
+            return round(cv_phi, 2), roi_box
+        else:
+            return default_phi, default_roi
 
-        manual_phi = st.slider(
-            "ปรับหมุนมุมแหลม ($\phi$) ให้เส้นสีแดงทาบตรงร่องตา:",
-            min_value=15.0,
-            max_value=75.0,
-            value=float(st.session_state.detected_phi),
-            step=0.1,
-            help="ปรับทีละ 0.1 องศาเพื่อความเป๊ะสูงสุด",
-        )
+    except Exception as e:
+        # ป้องกันแอปพังหากเกิด Exception
+        return default_phi, default_roi
 
-        default_index = (
-            0 if st.session_state.detected_model == "Model 8-13-21" else 1
-        )
-        selected_model = st.radio(
-            "โมเดลสับปะรด (วิเคราะห์จำแนกอัตโนมัติ):",
-            ("Model 8-13-21", "Model 5-8-13"),
-            index=default_index,
-        )
 
-        calc_theta = 180.0 - manual_phi
+# ==========================================================
+# 3. Streamlit App Interface & Main Logic
+# ==========================================================
+uploaded_file = st.file_uploader(
+    "เลือกไฟล์ภาพ (JPG, PNG)", type=["jpg", "jpeg", "png"]
+)
 
-        overlay_img = draw_precision_overlay(
-            image, manual_phi, st.session_state.roi_box
-        )
+if uploaded_file is not None:
+    # อ่านไฟล์ภาพและแปลงเป็น OpenCV Format (BGR)
+    file_bytes = np.asarray(
+        bytearray(uploaded_file.read()), dtype=np.uint8
+    )
+    image = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
+
+    col1, col2 = st.columns(2)
+
+    with col1:
+        st.subheader("🖼️ ภาพต้นฉบับ")
+        # แปลง BGR -> RGB สำหรับแสดงผลใน Streamlit
         st.image(
-            overlay_img,
-            caption=(
-                f"เส้นสีฟ้า (Baseline 0°) | เส้นสีแดงส้ม (แนวเกลียวตา ϕ ="
-                f" {manual_phi:.1f}°) | กรอบสีเหลือง (Center ROI)"
-            ),
+            cv2.cvtColor(image, cv2.COLOR_BGR2RGB), use_container_width=True
+        )
+
+    # ------------------------------------------------------
+    # ประมวลผลวัดมุม (บรรทัดเดิมของคุณที่มีปัญหา)
+    # ------------------------------------------------------
+    cv_phi, roi_box = detect_precise_angle_opencv(image)
+
+    # วาดกรอบ ROI บนภาพเพื่อแสดงผลลัพธ์
+    annotated_image = image.copy()
+    if roi_box is not None:
+        x1, y1, x2, y2 = roi_box
+        # วาดสี่เหลี่ยมสีเขียวล้อมรอบพื้นที่ ROI
+        cv2.rectangle(annotated_image, (x1, y1), (x2, y2), (0, 255, 0), 3)
+
+    with col2:
+        st.subheader("🎯 ผลการวิเคราะห์")
+        st.image(
+            cv2.cvtColor(annotated_image, cv2.COLOR_BGR2RGB),
             use_container_width=True,
         )
 
-with col_right:
-    st.subheader("📊 3. ผลการคำนวณและประเมินค่า Brix")
-
-    if uploaded_file is not None:
-        ideal_angle, x_val, brix_val = calculate_brix(
-            calc_theta, selected_model
-        )
-
-        st.markdown("### 🔍 ผลการตรวจสแกนกายภาพ (Precision Diagnostic)")
-        c1, c2 = st.columns(2)
-        c1.metric(
-            "จำนวนตาแนวระนาบ (Horizontal Eyes)",
-            st.session_state.get("eyes_count", "-"),
-        )
-        c2.metric(
-            "ความแน่นของร่องตา (Eye Density)",
-            st.session_state.get("eye_density", "-"),
-        )
-
         st.markdown("---")
-        m1, m2 = st.columns(2)
-        m1.metric("โมเดลสับปะรดที่เลือก", selected_model)
-        m2.metric("มุมแหลมวัดได้ ($\phi$)", f"{manual_phi:.1f}°")
-
-        m3, m4 = st.columns(2)
-        m3.metric(
-            "มุมเกลียวจริง ($\theta = 180^\circ - \phi$)", f"{calc_theta:.1f}°"
-        )
-        m4.metric("ระยะเบี่ยงเบน ($x = |\\theta - \\theta_0|$)", f"{x_val:.2f}°")
-
-        st.markdown("---")
-        st.metric(
-            label="ค่าความหวานประเมิน (°Brix)",
-            value=f"{brix_val:.2f} °Brix",
-            delta=f"{'ระดับหวานมาก' if brix_val >= 15.0 else 'ระดับหวานปกติ'}",
-        )
-
-        st.markdown("---")
-        st.markdown("### 📝 คำอธิบายการจำแนกของ AI")
-        st.info(f"**AI Reasoning:** {st.session_state.get('reasoning', '-')}")
-
-        st.json(
-            {
-                "AI Model Engine": GEMINI_MODEL_VERSION,
-                "Selected Model": selected_model,
-                "Horizontal Eyes Count": st.session_state.get("eyes_count", "-"),
-                "Eye Density": st.session_state.get("eye_density", "-"),
-                "Ideal Angle (theta_0)": f"{ideal_angle:.1f}°",
-                "Measured Acute Angle (phi)": f"{manual_phi:.1f}°",
-                "Calculated Spiral Angle (theta)": f"{calc_theta:.1f}°",
-                "Deviation Value (x)": f"{x_val:.4f}",
-                "Estimated Sweetness": f"{brix_val:.2f} °Brix",
-            }
-        )
-    else:
-        st.info("👈 กรุณาอัปโหลดรูปถ่ายสับปะรดที่เมนูด้านซ้ายเพื่อเริ่มต้นวิเคราะห์")
+        if roi_box is not None:
+            st.success(f"**มุมที่ตรวจจับได้ (cv_phi):** `{cv_phi}°`")
+            st.info(f"**ขอบเขต ROI Box (x1, y1, x2, y2):** `{roi_box}`")
+        else:
+            st.warning(
+                "⚠️ ไม่พบเส้นขอบโครงสร้างที่ชัดเจนในภาพ ระบบแสดงค่าเริ่มต้น (0.0°)"
+            )
+else:
+    st.info("💡 กรุณาอัปโหลดรูปภาพด้านบนเพื่อเริ่มต้นประมวลผล")
