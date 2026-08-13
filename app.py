@@ -146,7 +146,6 @@ def draw_visual_overlay(pil_img, centroids, slope, intercept, phi_deg, theta_deg
     if slope is not None and intercept is not None:
         draw.line([(x_min, mean_y), (x_max, mean_y)], fill="#FF0000", width=4)
         y1, y2 = slope * x_min + intercept, slope * x_max + intercept
-        # แก้ไขจุดที่ตกวงเล็บเรียบร้อยแล้ว
         draw.line([(x_min, int(y1)), (x_max, int(y2))], fill="#FF0000", width=4)
 
         text_info = f"Spiral Angle (Theta) = {theta_deg:.1f} deg"
@@ -159,29 +158,6 @@ def analyze_with_gemini(pil_img, theta_val, api_key):
     fast_img.thumbnail((800, 800))
 
     genai.configure(api_key=api_key)
-
-    # ดึงรายชื่อโมเดลที่ใช้ได้จริงจาก API Key
-    available_models = [
-        m.name for m in genai.list_models()
-        if "generateContent" in m.supported_generation_methods
-    ]
-
-    if not available_models:
-        raise ValueError("ไม่พบโมเดล Gemini ที่รองรับสำหรับ API Key นี้ กรุณาตรวจสอบ API Key ใน Google AI Studio")
-
-    selected_model_name = None
-    preferred_keywords = ["flash", "pro", "gemini"]
-    
-    for kw in preferred_keywords:
-        for model_name in available_models:
-            if kw in model_name:
-                selected_model_name = model_name
-                break
-        if selected_model_name:
-            break
-
-    if not selected_model_name:
-        selected_model_name = available_models[0]
 
     prompt = f"""
     คุณเป็นระบบวิเคราะห์ทางชีววิทยาและพฤกษศาสตร์สับปะรด
@@ -201,10 +177,25 @@ def analyze_with_gemini(pil_img, theta_val, api_key):
     โปรดระบุผลการวิเคราะห์สั้นๆ ชัดเจน สรุปว่าเลือกโมเดลใด พร้อมแสดงขั้นตอนคำนวณค่า °Brix ที่ได้
     """
 
-    model = genai.GenerativeModel(selected_model_name)
-    response = model.generate_content([fast_img, prompt])
-    
-    return response.text, selected_model_name
+    # กำหนด gemini-3.6-flash เป็นอันดับแรก
+    candidate_models = [
+        "gemini-3.6-flash",
+        "gemini-3.5-flash",
+        "gemini-2.5-flash",
+        "gemini-1.5-flash",
+    ]
+
+    last_error = None
+    for m_name in candidate_models:
+        try:
+            model = genai.GenerativeModel(m_name)
+            response = model.generate_content([fast_img, prompt])
+            return response.text, m_name
+        except Exception as e:
+            last_error = e
+            continue
+
+    raise last_error
 
 # -----------------------------------------------------------------------------
 # 5. Main UI Layout
@@ -248,7 +239,7 @@ with col2:
                 overlay_img = draw_visual_overlay(image, centroids, slope, intercept, phi, theta)
                 st.image(overlay_img, caption=f"มุมเกลียวสับปะรด θ = {theta:.1f}°", use_container_width=True)
 
-                with st.spinner("กำลังค้นหาโมเดลและส่งข้อมูลให้ Gemini วิเคราะห์..."):
+                with st.spinner("กำลังส่งข้อมูลให้ Gemini 3.6 Flash วิเคราะห์..."):
                     try:
                         gemini_result, used_model = analyze_with_gemini(image, theta, GEMINI_KEY)
                         st.caption(f"✨ ประมวลผลสำเร็จผ่านโมเดล: `{used_model}`")
