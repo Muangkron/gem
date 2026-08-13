@@ -20,10 +20,10 @@ st.set_page_config(
 )
 
 st.title("🍍 ระบบประเมินความหวานสับปะรด (Local YOLO + Spiral Math + Gemini)")
-st.caption("ระบบประมวลผล: YOLO Eye Detection ➔ Duplicate Filtering ➔ Spiral Vector Matching ➔ Dynamic Gemini Model Fetching")
+st.caption("ระบบประมวลผล: YOLO Eye Detection ➔ Duplicate Filtering ➔ Spiral Vector Matching ➔ Fast Gemini Vision")
 
 # -----------------------------------------------------------------------------
-# 2. Sidebar Settings & Dynamic Model Fetcher
+# 2. Sidebar Settings
 # -----------------------------------------------------------------------------
 api_key_secret = st.secrets.get("GEMINI_API_KEY", "")
 
@@ -37,35 +37,16 @@ with st.sidebar:
     )
     GEMINI_KEY = user_gemini_key if user_gemini_key else api_key_secret
 
-    # ฟังก์ชันดึงรายชื่อโมเดลที่ API Key นี้ใช้งานได้จริง (ป้องกันปัญหา 404)
-    def fetch_valid_models(api_key):
-        if not api_key:
-            return []
-        try:
-            genai.configure(api_key=api_key)
-            available_models = []
-            for m in genai.list_models():
-                # ดึงเฉพาะโมเดลที่รองรับ generateContent
-                if 'generateContent' in m.supported_generation_methods:
-                    name = m.name.replace('models/', '')
-                    # คัดเฉพาะโมเดลตระกูล gemini
-                    if 'gemini' in name:
-                        available_models.append(name)
-            return sorted(available_models)
-        except Exception:
-            return []
-
-    valid_models = fetch_valid_models(GEMINI_KEY)
-
-    if valid_models:
-        selected_model_option = st.selectbox(
-            "เลือกโมเดล Gemini (ที่ใช้งานได้จริงใน Key คุณ):",
-            options=valid_models,
-            index=0
-        )
-    else:
-        st.warning("⚠️ ไม่พบโมเดลที่ใช้งานได้ กรุณาเช็ก Gemini API Key")
-        selected_model_option = "gemini-1.5-flash"
+    # ใช้โมเดลที่ต่อท้ายด้วย -latest จะเสถียรและตอบกลับเร็วที่สุด
+    selected_model_option = st.selectbox(
+        "เลือกรุ่น Gemini Model:",
+        options=[
+            "gemini-1.5-flash-latest",
+            "gemini-1.5-pro-latest",
+            "gemini-1.5-flash",
+        ],
+        index=0,
+    )
 
     st.markdown("---")
     st.header("⚙️ ปรับแต่งระบบวัดเกลียว")
@@ -186,6 +167,10 @@ def draw_visual_overlay(pil_img, centroids, slope, intercept, phi_deg, theta_deg
     return img_copy
 
 def analyze_with_gemini(pil_img, theta_val, api_key, model_name):
+    # ปรับขนาดภาพเล็กน้อยก่อนส่ง เพื่อความรวดเร็วในการรับส่งผ่าน Network
+    fast_img = pil_img.copy()
+    fast_img.thumbnail((800, 800))
+
     genai.configure(api_key=api_key)
     model = genai.GenerativeModel(model_name)
 
@@ -207,7 +192,8 @@ def analyze_with_gemini(pil_img, theta_val, api_key, model_name):
     โปรดระบุผลการวิเคราะห์สั้นๆ ชัดเจน สรุปว่าเลือกโมเดลใด พร้อมแสดงขั้นตอนคำนวณค่า °Brix ที่ได้
     """
     
-    response = model.generate_content([pil_img, prompt])
+    # ส่งคำขอวิเคราะห์
+    response = model.generate_content([fast_img, prompt], request_options={"timeout": 30})
     return response.text
 
 # -----------------------------------------------------------------------------
