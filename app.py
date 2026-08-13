@@ -20,8 +20,7 @@ st.set_page_config(
 
 st.title("🍍 ระบบประเมินความหวานสับปะรด (Local YOLO + Math + Gemini)")
 st.caption(
-    "ระบบผสมผสาน: Local YOLO Detection (.pt model) ➔ Least Squares Angle"
-    " Calculation ➔ Gemini Vision Reasoning"
+    "ระบบผสมผสาน: Local YOLO Detection ➔ Deduplication Filter ➔ Least Squares Angle ➔ Gemini Reasoning"
 )
 
 # -----------------------------------------------------------------------------
@@ -39,11 +38,21 @@ with st.sidebar:
     )
     GEMINI_KEY = user_gemini_key if user_gemini_key else api_key_secret
 
-    # เพิ่มช่องให้ระบุชื่อโมเดล Gemini
     gemini_model_name = st.text_input(
         "ชื่อโมเดล Gemini:",
-        value="gemini-1.5-flash",
-        help="ระบุชื่อโมเดลที่ต้องการใช้งาน เช่น gemini-1.5-flash, gemini-2.0-flash",
+        value="gemini-2.5-flash",
+        help="ระบุชื่อโมเดล เช่น gemini-2.5-flash หรือรุ่นอื่นๆ",
+    )
+
+    st.markdown("---")
+    st.header("⚙️ ตั้งค่าระบบคัดกรองจุดตาซ้ำ")
+    dist_threshold_ratio = st.slider(
+        "ระยะทางขั้นต่ำในการแยกจุดตาซ้ำ (% ของภาพ):",
+        min_value=1.0,
+        max_value=5.0,
+        value=2.5,
+        step=0.5,
+        help="หากจุดตา 2 จุดอยู่ใกล้กันเกินค่านี้ ระบบจะยุบเหลือจุดเดียวเพื่อป้องกันความชันเพี้ยน",
     )
 
     st.markdown("---")
@@ -71,43 +80,63 @@ def load_yolo_model(model_path="best.pt"):
 # -----------------------------------------------------------------------------
 # 4. Core Helper Functions
 # -----------------------------------------------------------------------------
-def detect_eyes_local_yolo(image_path, model):
-    """ใช้โมเดล YOLO ตรวจจับพิกัดตา"""
+def detect_and_filter_eyes(image_path, model, img_w, img_h, ratio=2.5):
+    """ใช้ YOLO ตรวจจับพิกัดตา และทำการกรองจุดที่ซ้ำซ้อนกันออก"""
     results = model(image_path)
-    centroids = []
+    raw_centroids = []
 
     for r in results:
         boxes = r.boxes
         for box in boxes:
             x_center, y_center, w, h = box.xywh[0].tolist()
-            centroids.append((x_center, y_center))
+            raw_centroids.append((x_center, y_center))
 
-    return centroids
+    if not raw_centroids:
+        return []
+
+    # คำนวณระยะห่างขั้นต่ำ (Pixels) จาก % ของขนาดภาพ
+    min_dist_px = (min(img_w, img_h) * ratio) / 100.0
+
+    # กรองจุดตาซ้ำ (Deduplication)
+    filtered_centroids = []
+    for c in raw_centroids:
+        is_duplicate = False
+        for f in filtered_centroids:
+            dist = math.hypot(c[0] - f[0], c[1] - f[1])
+            if dist < min_dist_px:
+                is_duplicate = True
+                break
+        if not is_duplicate:
+            filtered_centroids.append(c)
+
+    return filtered_centroids
 
 
 def calculate_regression_angle(centroids):
-    """คำนวณเส้นถดถอยเชิงเส้นผ่านจุดศูนย์กลางตา หาค่ามุม phi และ theta"""
+    """คำนวณเส้นถดถอยเชิงเส้น หาค่ามุม phi และ theta (180 - phi)"""
     if len(centroids) < 2:
         return None, None, None, None
 
     x_coords = np.array([p[0] for p in centroids], dtype=np.float64)
     y_coords = np.array([p[1] for p in centroids], dtype=np.float64)
 
-    # คำนวณความชัน m และจุดตัด y-intercept (c)
+    # คำนวณความชัน m บนพิกัดภาพ y = mx + c
     slope, intercept = np.polyfit(x_coords, y_coords, 1)
 
-    # คำนวณมุมแหลม phi กับแกนนอน (พิจารณาขนาดความชัน |m|)
+    # ความชันแหลมเชิงเรขาคณิต |m|
     abs_slope = abs(float(slope))
+    
+    # phi คือ มุมแหลมที่ทำกับแกนนอน (0 ถึง 90 องศา)
     phi_deg = math.degrees(math.atan(abs_slope))
 
-    # คำนวณมุมเกลียวจริง theta
+    # theta คือ มุมเกลียวจริง (180 - phi) ตามที่ผู้ใช้ต้องการ
     theta_deg = 180.0 - phi_deg
 
     return slope, intercept, phi_deg, theta_deg
 
 
-def draw_visual_overlay(pil_img, centroids, slope, intercept, theta_deg):
-    """วาดจุดตา เส้นแนวนอนอ้างอิง Baseline (ฟ้า) และเส้นถดถอย (แดง/ส้ม)"""
+def draw_visual_overlay(pil_img, centroids, slope, intercept, phi_deg, theta_deg):
+    """วาดจุดตา เส้นแนวนอน baseline (ฟ้า) และเส้นถดถอยเกลียว (ส้ม/แดง)"""
     img_copy = pil_img.copy()
     draw = PIL.ImageDraw.Draw(img_copy)
     w, h = img_copy.size
@@ -115,16 +144,16 @@ def draw_visual_overlay(pil_img, centroids, slope, intercept, theta_deg):
     x_coords = [p[0] for p in centroids]
     y_coords = [p[1] for p in centroids]
 
-    # คำนวณจุดศูนย์กลางมวล (Centroid Center) และขอบเขตการลากเส้น
+    # คำนวณจุดศูนย์กลางมวล และขอบเขตการลากเส้น
     mean_x = float(np.mean(x_coords))
     mean_y = float(np.mean(y_coords))
 
-    padding = max(50, int(w * 0.08))
+    padding = max(40, int(w * 0.1))
     x_min = max(0, int(np.min(x_coords)) - padding)
     x_max = min(w, int(np.max(x_coords)) + padding)
 
-    # 1. วาดจุดตา (Green Circles)
-    circle_radius = max(4, int(min(w, h) * 0.008))
+    # 1. วาดจุดตาที่ผ่านการกรองแล้ว (Green Circles)
+    circle_radius = max(5, int(min(w, h) * 0.008))
     for cx, cy in centroids:
         draw.ellipse(
             [
@@ -134,19 +163,19 @@ def draw_visual_overlay(pil_img, centroids, slope, intercept, theta_deg):
                 cy + circle_radius,
             ],
             fill="#00FF66",
-            outline="#FFFFFF",
+            outline="#000000",
             width=2,
         )
 
     if slope is not None and intercept is not None:
-        # 2. วาดเส้น Baseline แนวนอน 0 องศา (Cyan/Blue Line) ผ่านจุดกลางมวล
+        # 2. วาดเส้น Baseline แวนอน 0 องศา (Cyan Line) ผ่านจุดกลางมวล
         draw.line(
             [(x_min, mean_y), (x_max, mean_y)],
             fill="#00E5FF",
             width=3,
         )
 
-        # 3. วาดเส้นถดถอยเชิงเส้น Regression Line (Orange/Red Line)
+        # 3. วาดเส้นถดถอยเชิงเส้น Regression Line (Red/Orange Line)
         y1 = slope * x_min + intercept
         y2 = slope * x_max + intercept
         draw.line(
@@ -156,10 +185,10 @@ def draw_visual_overlay(pil_img, centroids, slope, intercept, theta_deg):
         )
 
         # 4. พิมพ์ข้อความแสดงค่ามุมบนภาพ
-        text = f"Theta (spiral angle) = {theta_deg:.2f} deg"
+        text_info = f"Phi (acute) = {phi_deg:.2f} deg | Theta (180 - phi) = {theta_deg:.2f} deg"
         draw.text(
-            (x_min, max(10, int(mean_y) - 30)),
-            text,
+            (max(10, x_min), max(10, int(mean_y) - 35)),
+            text_info,
             fill="#FFFF00",
         )
 
@@ -174,7 +203,7 @@ def analyze_with_gemini(pil_img, theta_val, api_key, model_name):
     คุณเป็นระบบวิเคราะห์ทางชีววิทยาและพฤกษศาสตร์สับปะรด
     
     ข้อมูลอินพุตจากระบบวัดมุมพิกัดจริง:
-    - มุมเกลียวสับปะรดที่คำนวณได้ (theta): {theta_val:.2f} องศา
+    - มุมเกลียวสับปะรดที่คำนวณได้ (theta = 180 - phi): {theta_val:.2f} องศา
     
     หน้าที่ของคุณ:
     1. วิเคราะห์รูปถ่ายสับปะรดเพื่อดูความหนาแน่น ขนาดตา และระยะห่างของร่องตา
@@ -209,6 +238,7 @@ with col1:
         temp_path = "temp_upload.jpg"
         image = PIL.Image.open(uploaded_file).convert("RGB")
         image.save(temp_path)
+        img_w, img_h = image.size
 
         st.image(image, caption="รูปภาพต้นฉบับ", use_container_width=True)
 
@@ -219,10 +249,12 @@ with col2:
         if not GEMINI_KEY:
             st.warning("⚠️ กรุณากรอก Gemini API Key ในแถบด้านซ้ายก่อนเริ่มประมวลผล")
         elif st.button("🚀 เริ่มประมวลผลระบบ Hybrid AI", type="primary"):
-            with st.spinner("กำลังโหลดโมเดลและตรวจจับพิกัดตา..."):
+            with st.spinner("กำลังโหลดโมเดล คัดกรองจุดซ้ำ และคำนวณมุม..."):
                 try:
                     yolo_model = load_yolo_model("best.pt")
-                    centroids = detect_eyes_local_yolo(temp_path, yolo_model)
+                    centroids = detect_and_filter_eyes(
+                        temp_path, yolo_model, img_w, img_h, dist_threshold_ratio
+                    )
                 except Exception as e:
                     st.error(
                         f"เกิดข้อผิดพลาดในการโหลดโมเดล: {e}\nโปรดตรวจสอบว่าอัปโหลดไฟล์"
@@ -232,25 +264,25 @@ with col2:
 
             if len(centroids) < 2:
                 st.warning(
-                    "⚠️ ตรวจจับตาได้น้อยกว่า 2 จุด ไม่สามารถคำนวณเส้นถดถอยได้"
+                    "⚠️ ตรวจจับตาได้น้อยกว่า 2 จุด (หลังคัดกรองจุดซ้ำ) ไม่สามารถคำนวณเส้นถดถอยได้"
                 )
             else:
-                st.success(f"🟢 โมเดลตรวจจับจุดตาได้ทั้งหมด {len(centroids)} จุด")
+                st.success(f"🟢 หลังคัดกรองจุดซ้ำ ได้พิกัดจุดตาที่สมบูรณ์ทั้งหมด {len(centroids)} จุด")
 
                 # คำนวณทางคณิตศาสตร์
                 slope, intercept, phi, theta = calculate_regression_angle(
                     centroids
                 )
 
-                # แสดงภาพ Overlay ที่แก้ไขมุมแล้ว
+                # แสดงภาพ Overlay ที่แก้ไขมุมและคัดกรองแล้ว
                 overlay_img = draw_visual_overlay(
-                    image, centroids, slope, intercept, theta
+                    image, centroids, slope, intercept, phi, theta
                 )
                 st.image(
                     overlay_img,
                     caption=(
-                        f"จุดตา (เขียว) | เส้นฐาน 0° (ฟ้า) | เส้นเกลียว (แดง)"
-                        f" มุมเกลียว θ = {theta:.2f}°"
+                        f"จุดตา (เขียว) | เส้นแนวนอน 0° (ฟ้า) | เส้นเกลียว (แดง)"
+                        f" | มุมเกลียว θ = {theta:.2f}° (180° - {phi:.2f}°)"
                     ),
                     use_container_width=True,
                 )
