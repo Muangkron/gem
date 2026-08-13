@@ -22,7 +22,7 @@ st.caption(
 )
 
 # ล็อกรุ่นโมเดล Gemini 3.6 ในหลังบ้านทันที
-GEMINI_MODEL_VERSION = "gemini-3.6"
+GEMINI_MODEL_VERSION = "gemini-3.6-flash"
 
 # -----------------------------------------------------------------------------
 # 2. การจัดการ API Key & Sidebar Reference
