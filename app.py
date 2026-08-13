@@ -18,7 +18,7 @@ st.set_page_config(
 
 st.title("🍍 ระบบประเมินค่าความหวานสับปะรด (Brix Estimation System)")
 st.caption(
-    "วัดมุมเกลียว (Spiral Angle) จำแนกโมเดล (Model 5-8-13 / 8-13-21) และประเมินค่า Brix ด้วย Gemini AI + OpenCV"
+    "วัดมุมเกลียว (Spiral Angle) จำแนกโมเดล (Model 5-8-13 / 8-13-21) และประเมินค่า Brix ด้วย Gemini 3.6 Flash + OpenCV"
 )
 
 # ==========================================================
@@ -119,7 +119,7 @@ def detect_spiral_angle_opencv(image):
 
 
 def analyze_pineapple_gemini(pil_img, key):
-    """ส่งภาพให้ Gemini AI วิเคราะห์มุมเกลียว จำแนกโมเดลสับปะรด และประเมินค่า Brix"""
+    """ส่งภาพให้ Gemini 3.6 Flash วิเคราะห์มุมเกลียว จำแนกโมเดลสับปะรด และประเมินค่า Brix"""
     if not key:
         return None
 
@@ -143,8 +143,9 @@ def analyze_pineapple_gemini(pil_img, key):
         }
         """
 
+        # ⚡ เรียกใช้โมเดล gemini-3.6-flash
         response = client.models.generate_content(
-            model="gemini-2.5-flash",
+            model="gemini-3.6-flash",
             contents=[pil_img, prompt],
             config=types.GenerateContentConfig(
                 response_mime_type="application/json",
@@ -176,12 +177,12 @@ if uploaded_file is not None:
 
     # ปุ่มสั่งงาน Gemini AI
     st.markdown("---")
-    if st.button("🚀 สั่ง Gemini AI วิเคราะห์สับปะรด (Analyze Pineapple)"):
+    if st.button("🚀 สั่ง Gemini 3.6 Flash วิเคราะห์สับปะรด (Analyze Pineapple)"):
         if not api_key:
             st.error("กรุณากรอก Gemini API Key ในแถบด้านซ้ายก่อนครับ")
         else:
             with st.spinner(
-                "🧠 Gemini AI กำลังวัดมุมเกลียวและจำแนกโมเดลสับปะรด..."
+                "🧠 Gemini 3.6 Flash กำลังวัดมุมเกลียวและจำแนกโมเดลสับปะรด..."
             ):
                 res = analyze_pineapple_gemini(pil_image, api_key)
 
@@ -210,7 +211,7 @@ if uploaded_file is not None:
                     st.session_state["roi_ymin"] = max(0, ymin)
                     st.session_state["roi_xmax"] = min(img_w, xmax)
                     st.session_state["roi_ymax"] = min(img_h, ymax)
-                    st.success("วิเคราะห์สำเร็จ!")
+                    st.success("วิเคราะห์สำเร็จด้วย Gemini 3.6 Flash!")
 
     # ค่าเริ่มต้น Session State
     if "analyzed" not in st.session_state:
@@ -295,7 +296,6 @@ if uploaded_file is not None:
     # ------------------------------------------------------
     # 6. Real-time Brix Calculation & Rendering
     # ------------------------------------------------------
-    # คำนวณค่า Brix ทันทีที่ผู้ใช้ขยับ Slider มุมเกลียว
     calculated_brix = calculate_brix_polynomial(user_angle, user_model)
 
     annotated_img = cv_image.copy()
@@ -307,7 +307,6 @@ if uploaded_file is not None:
         3,
     )
 
-    # Auto-Crop ภาพสับปะรด
     crop_x1 = max(0, min(user_xmin, user_xmax))
     crop_y1 = max(0, min(user_ymin, user_ymax))
     crop_x2 = min(img_w, max(user_xmin, user_xmax))
@@ -362,7 +361,7 @@ if uploaded_file is not None:
 
     if st.session_state["reasoning"] != "-":
         st.info(
-            f"💡 **เหตุผลการวิเคราะห์จาก Gemini AI:** {st.session_state['reasoning']}"
+            f"💡 **เหตุผลการวิเคราะห์จาก Gemini 3.6 Flash:** {st.session_state['reasoning']}"
         )
 else:
     st.info("💡 กรุณาอัปโหลดรูปภาพสับปะรดเพื่อเริ่มวิเคราะห์ค่าความหวาน Brix")
