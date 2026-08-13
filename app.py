@@ -5,6 +5,7 @@ from google import genai
 import numpy as np
 import PIL.Image
 import PIL.ImageDraw
+import PIL.ImageFont
 import streamlit as st
 from ultralytics import YOLO
 
@@ -24,20 +25,26 @@ st.caption(
 )
 
 # -----------------------------------------------------------------------------
-# 2. Sidebar Setup & API Key Input (เพิ่มช่องกรอก API Key ตรงนี้)
+# 2. Sidebar Setup & Settings
 # -----------------------------------------------------------------------------
 api_key_secret = st.secrets.get("GEMINI_API_KEY", "")
 
 with st.sidebar:
-    st.header("🔑 การตั้งค่า API Key")
+    st.header("🔑 ตั้งค่า API Key & Model")
     user_gemini_key = st.text_input(
-        "กรอก Gemini API Key ของคุณ:",
+        "Gemini API Key:",
         value=api_key_secret,
         type="password",
-        help="นำ API Key จาก Google AI Studio มาวางตรงนี้เพื่อเริ่มใช้งาน",
+        help="นำ API Key จาก Google AI Studio มาวางตรงนี้",
     )
-    # เลือกรหัสจากช่องกรอกก่อน หากไม่มีค่อยดึงจาก Secrets
     GEMINI_KEY = user_gemini_key if user_gemini_key else api_key_secret
+
+    # เพิ่มช่องให้ระบุชื่อโมเดล Gemini
+    gemini_model_name = st.text_input(
+        "ชื่อโมเดล Gemini:",
+        value="gemini-1.5-flash",
+        help="ระบุชื่อโมเดลที่ต้องการใช้งาน เช่น gemini-1.5-flash, gemini-2.0-flash",
+    )
 
     st.markdown("---")
     st.header("📌 เกณฑ์แบบจำลองสับปะรด")
@@ -65,7 +72,7 @@ def load_yolo_model(model_path="best.pt"):
 # 4. Core Helper Functions
 # -----------------------------------------------------------------------------
 def detect_eyes_local_yolo(image_path, model):
-    """ใช้โมเดล YOLO ในเครื่องตรวจจับพิกัดตา"""
+    """ใช้โมเดล YOLO ตรวจจับพิกัดตา"""
     results = model(image_path)
     centroids = []
 
@@ -86,40 +93,80 @@ def calculate_regression_angle(centroids):
     x_coords = np.array([p[0] for p in centroids], dtype=np.float64)
     y_coords = np.array([p[1] for p in centroids], dtype=np.float64)
 
+    # คำนวณความชัน m และจุดตัด y-intercept (c)
     slope, intercept = np.polyfit(x_coords, y_coords, 1)
+
+    # คำนวณมุมแหลม phi กับแกนนอน (พิจารณาขนาดความชัน |m|)
     abs_slope = abs(float(slope))
     phi_deg = math.degrees(math.atan(abs_slope))
+
+    # คำนวณมุมเกลียวจริง theta
     theta_deg = 180.0 - phi_deg
 
     return slope, intercept, phi_deg, theta_deg
 
 
-def draw_visual_overlay(pil_img, centroids, slope, intercept):
-    """วาดจุดตาและเส้นถดถอยทับลงบนภาพ"""
+def draw_visual_overlay(pil_img, centroids, slope, intercept, theta_deg):
+    """วาดจุดตา เส้นแนวนอนอ้างอิง Baseline (ฟ้า) และเส้นถดถอย (แดง/ส้ม)"""
     img_copy = pil_img.copy()
     draw = PIL.ImageDraw.Draw(img_copy)
     w, h = img_copy.size
 
+    x_coords = [p[0] for p in centroids]
+    y_coords = [p[1] for p in centroids]
+
+    # คำนวณจุดศูนย์กลางมวล (Centroid Center) และขอบเขตการลากเส้น
+    mean_x = float(np.mean(x_coords))
+    mean_y = float(np.mean(y_coords))
+
+    padding = max(50, int(w * 0.08))
+    x_min = max(0, int(np.min(x_coords)) - padding)
+    x_max = min(w, int(np.max(x_coords)) + padding)
+
     # 1. วาดจุดตา (Green Circles)
+    circle_radius = max(4, int(min(w, h) * 0.008))
     for cx, cy in centroids:
         draw.ellipse(
-            [cx - 6, cy - 6, cx + 6, cy + 6], fill="#00FF66", outline="#FFFFFF"
+            [
+                cx - circle_radius,
+                cy - circle_radius,
+                cx + circle_radius,
+                cy + circle_radius,
+            ],
+            fill="#00FF66",
+            outline="#FFFFFF",
+            width=2,
         )
 
-    # 2. วาดเส้นถดถอย (Red Regression Line)
     if slope is not None and intercept is not None:
-        mean_x = int(np.mean([p[0] for p in centroids]))
-        line_len = w // 3
-        x1 = mean_x - line_len
-        y1 = int(slope * x1 + intercept)
-        x2 = mean_x + line_len
-        y2 = int(slope * x2 + intercept)
-        draw.line([(x1, y1), (x2, y2)], fill="#FF3D00", width=4)
+        # 2. วาดเส้น Baseline แนวนอน 0 องศา (Cyan/Blue Line) ผ่านจุดกลางมวล
+        draw.line(
+            [(x_min, mean_y), (x_max, mean_y)],
+            fill="#00E5FF",
+            width=3,
+        )
+
+        # 3. วาดเส้นถดถอยเชิงเส้น Regression Line (Orange/Red Line)
+        y1 = slope * x_min + intercept
+        y2 = slope * x_max + intercept
+        draw.line(
+            [(x_min, int(y1)), (x_max, int(y2))],
+            fill="#FF3D00",
+            width=4,
+        )
+
+        # 4. พิมพ์ข้อความแสดงค่ามุมบนภาพ
+        text = f"Theta (spiral angle) = {theta_deg:.2f} deg"
+        draw.text(
+            (x_min, max(10, int(mean_y) - 30)),
+            text,
+            fill="#FFFF00",
+        )
 
     return img_copy
 
 
-def analyze_with_gemini(pil_img, theta_val, api_key):
+def analyze_with_gemini(pil_img, theta_val, api_key, model_name):
     """ส่งภาพ + มุมเกลียว ให้ Gemini ประเมินโมเดลและคำนวณ Brix"""
     client = genai.Client(api_key=api_key)
 
@@ -142,7 +189,7 @@ def analyze_with_gemini(pil_img, theta_val, api_key):
     """
 
     response = client.models.generate_content(
-        model="gemini-2.5-flash", contents=[pil_img, prompt]
+        model=model_name, contents=[pil_img, prompt]
     )
     return response.text
 
@@ -169,7 +216,6 @@ with col2:
     st.subheader("2. ผลการวิเคราะห์")
 
     if uploaded_file is not None:
-        # เช็กว่ากรอก API Key หรือยัง
         if not GEMINI_KEY:
             st.warning("⚠️ กรุณากรอก Gemini API Key ในแถบด้านซ้ายก่อนเริ่มประมวลผล")
         elif st.button("🚀 เริ่มประมวลผลระบบ Hybrid AI", type="primary"):
@@ -196,32 +242,33 @@ with col2:
                     centroids
                 )
 
-                # แสดงภาพ Overlay
+                # แสดงภาพ Overlay ที่แก้ไขมุมแล้ว
                 overlay_img = draw_visual_overlay(
-                    image, centroids, slope, intercept
+                    image, centroids, slope, intercept, theta
                 )
                 st.image(
                     overlay_img,
                     caption=(
-                        f"จุดตา (เขียว) | เส้นถดถอย (แดง) มุมเกลียว θ ="
-                        f" {theta:.2f}°"
+                        f"จุดตา (เขียว) | เส้นฐาน 0° (ฟ้า) | เส้นเกลียว (แดง)"
+                        f" มุมเกลียว θ = {theta:.2f}°"
                     ),
                     use_container_width=True,
                 )
 
                 # ส่งต่อให้ Gemini ประเมินผล
                 with st.spinner(
-                    "กำลังส่งข้อมูลให้ Gemini วิเคราะห์ประเมินค่า °Brix..."
+                    f"กำลังส่งข้อมูลให้ Gemini ({gemini_model_name}) วิเคราะห์..."
                 ):
                     try:
                         gemini_result = analyze_with_gemini(
-                            image, theta, GEMINI_KEY
+                            image, theta, GEMINI_KEY, gemini_model_name
                         )
                         st.markdown("### 🤖 ผลการวิเคราะห์จาก Gemini")
                         st.write(gemini_result)
                     except Exception as e:
                         st.error(
-                            f"เกิดข้อผิดพลาดในการเรียก Gemini API: {e}\nโปรดตรวจสอบว่า API Key ถูกต้องหรือไม่"
+                            f"เกิดข้อผิดพลาดในการเรียก Gemini API: {e}\nโปรดตรวจสอบว่าชื่อโมเดล"
+                            " หรือ API Key ถูกต้องหรือไม่"
                         )
 
             # ลบไฟล์ชั่วคราว
