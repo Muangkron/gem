@@ -1,6 +1,5 @@
 import json
 import math
-import re
 import cv2
 import numpy as np
 import PIL.Image
@@ -26,9 +25,6 @@ st.caption(
 # 2. ฟังก์ชันคำนวณความหวานตามแบบจำลองคณิตศาสตร์ (Polynomial Regression)
 # -----------------------------------------------------------------------------
 def calculate_brix(theta, model_choice):
-    """
-    คำนวณค่า x (ระยะห่างจากมุมอุดมคติ) และค่า Brix ตามโมเดลที่เลือก
-    """
     if model_choice == "Model 5-8-13":
         ideal_angle = 155.0
         x = abs(theta - ideal_angle)
@@ -42,14 +38,9 @@ def calculate_brix(theta, model_choice):
 
 
 # -----------------------------------------------------------------------------
-# 3. ฟังก์ชัน Computer Vision สแกนร่องตาและวัดมุมเรขาคณิต (OpenCV Engine)
+# 3. ฟังก์ชัน Computer Vision สแกนร่องตาและวัดมุมเรขาคณิต (แก้ไข Error แล้ว)
 # -----------------------------------------------------------------------------
 def process_center_roi_and_detect_angle(pil_img):
-    """
-    1. ครอบตัดเฉพาะแกนกลางผล (Center ROI 40%) เพื่อลด Distortion จากความโค้ง 3D
-    2. ใช้ OpenCV ตรวจจับ Edge และ Hough Lines ในแนวเกลียวซ้ายบน -> ขวาล่าง
-    3. คำนวณมุมแหลม phi และมุมจริง theta
-    """
     img_np = np.array(pil_img.convert("RGB"))
     height, width, _ = img_np.shape
 
@@ -81,20 +72,23 @@ def process_center_roi_and_detect_angle(pil_img):
 
     if lines is not None:
         for line in lines:
-            lx1, ly1, lx2, ly2 = line[0]
-            dx = lx2 - lx1
-            dy = ly2 - ly1
+            # ใช้ .flatten() ป้องกันปัญหา Dimension Mismatch ระหว่าง OS
+            coords = line.flatten()
+            if len(coords) == 4:
+                lx1, ly1, lx2, ly2 = coords
+                dx = float(lx2 - lx1)
+                dy = float(ly2 - ly1)
 
-            if dx != 0:
-                slope = dy / dx
-                # เลือกเฉพาะเส้นที่มีความชันสอดคล้องกับแนวเกลียวซ้ายบนลงขวาล่าง (Slope > 0)
-                if slope > 0.2:
-                    angle_rad = math.atan(slope)
-                    angle_deg = math.degrees(angle_rad)
-                    if 20.0 <= angle_deg <= 75.0:
-                        angles_phi.append(angle_deg)
+                if dx != 0:
+                    slope = dy / dx
+                    # เลือกเฉพาะเส้นที่มีความชันสอดคล้องกับแนวเกลียวซ้ายบนลงขวาล่าง (Slope > 0)
+                    if slope > 0.2:
+                        angle_rad = math.atan(slope)
+                        angle_deg = math.degrees(angle_rad)
+                        if 20.0 <= angle_deg <= 75.0:
+                            angles_phi.append(angle_deg)
 
-    # หากตรวจพบเส้น ให้ใช้ค่าเฉลี่ย ถ้าไม่พบให้ใช้ค่า Default 41.0° (theta = 139.0°)
+    # หากตรวจพบเส้น ให้ใช้ค่ามัธยฐาน (Median) ถ้าไม่พบให้ใช้ค่าเริ่มต้น 41.0°
     if angles_phi:
         detected_phi = float(np.median(angles_phi))
     else:
@@ -108,15 +102,11 @@ def process_center_roi_and_detect_angle(pil_img):
 # 4. ฟังก์ชันวาดเส้น Overlay อ้างอิงลงบนภาพ (Visual Feedback)
 # -----------------------------------------------------------------------------
 def draw_angle_overlay(pil_img, phi_deg, roi_box):
-    """
-    วาดเส้นอ้างอิงแนวนอน (Baseline 0°) และเส้นแนวเกลียวตาตามมุม phi ลงบนภาพ
-    เพื่อแสดงผลให้ผู้ใช้เห็นว่าระบบวัดมุมตรงไหน
-    """
     img_copy = pil_img.copy()
     draw = PIL.ImageDraw.Draw(img_copy)
     width, height = img_copy.size
 
-    # วาดกรอบ Center ROI (เส้นสีเหลืองประ)
+    # วาดกรอบ Center ROI (เส้นสีเหลือง)
     x1, y1, x2, y2 = roi_box
     draw.rectangle([x1, y1, x2, y2], outline="#FFD700", width=3)
 
@@ -137,7 +127,6 @@ def draw_angle_overlay(pil_img, phi_deg, roi_box):
     dx = int(line_length * math.cos(phi_rad))
     dy = int(line_length * math.sin(phi_rad))
 
-    # เส้นทแยงจาก ซ้ายบน -> ขวาล่าง
     p1 = (cx - dx, cy - dy)
     p2 = (cx + dx, cy + dy)
     draw.line([p1, p2], fill="#FF3D00", width=5)
@@ -151,7 +140,7 @@ def draw_angle_overlay(pil_img, phi_deg, roi_box):
 
 
 # -----------------------------------------------------------------------------
-# 5. ส่วนติดต่อผู้ใช้ Sidebar (Sidebar Controls & Information)
+# 5. ส่วนติดต่อผู้ใช้ Sidebar
 # -----------------------------------------------------------------------------
 with st.sidebar:
     st.header("⚙️ การตั้งค่าและสูตรที่ใช้")
@@ -175,7 +164,7 @@ with st.sidebar:
     )
 
 # -----------------------------------------------------------------------------
-# 6. ส่วนการรับภาพและการประมวลผลหลัก (Main Application Logic)
+# 6. ส่วนการรับภาพและการประมวลผลหลัก
 # -----------------------------------------------------------------------------
 col_left, col_right = st.columns([1.1, 0.9])
 
@@ -200,7 +189,6 @@ with col_left:
             "หากเส้นที่ระบบตรวจจับอัตโนมัติไม่ตรงร่องตา คุณสามารถใช้ Slider ปรับหมุนเส้นให้ตรงกับร่องตาจริงได้ทันที"
         )
 
-        # Slider สำหรับ Fine-tune มุมแหลม phi
         manual_phi = st.slider(
             "ปรับมุมแหลม ($\phi$) ที่เส้นเกลียวทำกับแนวนอนฝั่งขวา:",
             min_value=15.0,
@@ -212,7 +200,6 @@ with col_left:
 
         calc_theta = 180.0 - manual_phi
 
-        # ปุ่มเลือกโมเดล (เน้นย้ำ: แยกจากลักษณะกายภาพ/จำนวนตา ไม่ใช้มุมเลือกโมเดล)
         selected_model = st.radio(
             "เลือกแบบจำลองสับปะรด (พิจารณาจากขนาดผล/จำนวนเกลียวตา):",
             ("Model 8-13-21", "Model 5-8-13"),
@@ -220,7 +207,6 @@ with col_left:
             help="Model 8-13-21: ผลกลาง-ใหญ่ ตาแน่นถี่ | Model 5-8-13: ผลเล็ก-กลาง ตาห่างกว่า",
         )
 
-        # วาด Overlay แสดงผล
         overlay_img = draw_angle_overlay(image, manual_phi, roi_box)
         st.image(
             overlay_img,
@@ -236,7 +222,6 @@ with col_right:
             calc_theta, selected_model
         )
 
-        # แสดง Metrics ผลลัพธ์
         m1, m2 = st.columns(2)
         m1.metric(
             label="มุมแหลมวัดได้ ($\phi$)", value=f"{manual_phi:.1f}°"
