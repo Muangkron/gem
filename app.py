@@ -20,7 +20,7 @@ st.set_page_config(
 
 st.title("🍍 ระบบประเมินความหวานสับปะรด (Local YOLO + Spiral Math + Gemini)")
 st.caption(
-    "ระบบประมวลผล: YOLO Eye Detection ➔ Deduplication ➔ Spiral Line RANSAC Fitting ➔ Gemini Vision"
+    "ระบบประมวลผล: YOLO Eye Detection ➔ Duplicate Filtering ➔ Spiral Neighbor Vector Matching ➔ Gemini Vision"
 )
 
 # -----------------------------------------------------------------------------
@@ -38,11 +38,11 @@ with st.sidebar:
     )
     GEMINI_KEY = user_gemini_key if user_gemini_key else api_key_secret
 
-    # ตัวเลือก Model Name ที่ถูกต้องตาม Google AI Studio
-    gemini_model_name = st.selectbox(
-        "เลือกรุ่น Gemini Model:",
-        options=["gemini-1.5-flash", "gemini-2.0-flash", "gemini-1.5-pro"],
-        index=0,
+    # ช่องระบุชื่อโมเดล Gemini (ตั้งค่าเริ่มต้นเป็น gemini-3.6-flash หรือพิมพ์แก้เองได้)
+    gemini_model_name = st.text_input(
+        "ระบุชื่อโมเดล Gemini:",
+        value="gemini-3.6-flash",
+        help="เช่น gemini-3.6-flash, gemini-2.5-flash หรือรุ่นอื่นๆ ที่เปิดใช้งานใน API ของคุณ",
     )
 
     st.markdown("---")
@@ -110,73 +110,70 @@ def detect_and_filter_eyes(image_path, model, img_w, img_h, ratio=2.5):
     return filtered_centroids
 
 
-def fit_best_spiral_line(centroids):
+def calculate_accurate_spiral_angle(centroids, img_w, img_h):
     """
-    เฟ้นหาแนวเกลียวสับปะรด (Top-Left -> Bottom-Right) ที่แม่นยำที่สุด
-    พร้อมคำนวณมุม theta (180 - phi) ตรงตามรูปอ้างอิง
+    คำนวณมุมเกลียวสับปะรด (Top-Left -> Bottom-Right) อย่างแม่นยำ
+    โดยหาความชันระหว่างตาคู่ข้างเคียงเฉพาะแนวเกลียว
     """
     if len(centroids) < 2:
-        return None, None, None, None, []
+        return None, None, None, None
 
-    # 1. คำนวณความชันแนวเกลียวระหว่างคู่จุดตาที่อยู่ใกล้กัน
-    pair_slopes = []
+    # ระยะห่างระหว่างตาข้างเคียงที่เหมาะสม (5% - 30% ของความสูงภาพ)
+    min_neighbor_dist = img_h * 0.05
+    max_neighbor_dist = img_h * 0.30
+
+    spiral_slopes = []
+
+    # หาคู่ตาที่อยู่ในแนวเกลียว บนซ้าย -> ล่างขวา (dx > 0 และ dy > 0)
     n = len(centroids)
     for i in range(n):
-        for j in range(i + 1, n):
-            p1, p2 = centroids[i], centroids[j]
+        for j in range(n):
+            if i == j:
+                continue
+            p1 = centroids[i]  # จุดเริ่ม (ต้องอยู่ซ้าย/บนกว่า)
+            p2 = centroids[j]  # จุดจบ (ต้องอยู่ขวา/ล่างกว่า)
+
             dx = p2[0] - p1[0]
             dy = p2[1] - p1[1]
 
-            if abs(dx) < 1e-5:
-                continue
-
-            slope = dy / dx
-            # กรองเอาเฉพาะแนวเกลียวเฉียงลงซ้ายไปขวา (Pixel slope > 0)
-            if 0.2 <= slope <= 3.0:
+            # คัดกรองเฉพาะทิศทาง บนซ้าย -> ล่างขวา
+            if dx > 10 and dy > 10:
                 dist = math.hypot(dx, dy)
-                pair_slopes.append((slope, dist, p1, p2))
+                if min_neighbor_dist <= dist <= max_neighbor_dist:
+                    slope_px = dy / dx
+                    # มุมเกลียวปกติจะอยู่ระหว่าง 20° ถึง 65° ในระบบพิกัดพิกเซล (m ระหว่าง 0.36 ถึง 2.14)
+                    if 0.35 <= slope_px <= 2.5:
+                        spiral_slopes.append(slope_px)
 
-    # หากไม่พบแนวเกลียวเฉียง ให้ใช้ Linear Regression รวมแบบดั้งเดิม
-    if not pair_slopes:
+    # หากไม่พบคู่เกลียว ให้ใช้ค่าความชันเฉลี่ยรวม
+    if spiral_slopes:
+        m_pixel = float(np.median(spiral_slopes))
+    else:
+        # Fallback กรณีตาอยู่น้อย
         x_coords = np.array([p[0] for p in centroids], dtype=np.float64)
         y_coords = np.array([p[1] for p in centroids], dtype=np.float64)
-        slope, intercept = np.polyfit(x_coords, y_coords, 1)
-        abs_slope = abs(float(slope))
-        phi_deg = math.degrees(math.atan(abs_slope))
-        theta_deg = 180.0 - phi_deg
-        return slope, intercept, phi_deg, theta_deg, centroids
+        m_pixel, _ = np.polyfit(x_coords, y_coords, 1)
+        m_pixel = abs(float(m_pixel))
 
-    # 2. ค้นหาค่าความชันมัธยฐาน (Median Spiral Slope)
-    slopes_only = [p[0] for p in pair_slopes]
-    target_slope = float(np.median(slopes_only))
+    # คำนวณมุมแหลม phi ที่ทำกับแนวนอน
+    phi_rad = math.atan(m_pixel)
+    phi_deg = math.degrees(phi_rad)
 
-    # 3. เลือกจุดตาที่สอดคล้องกับแนวเกลียวนี้มากที่สุด
-    inlier_points = []
-    for c in centroids:
-        # คำนวณระยะห่างระหว่างจุดกับแนวความชันเป้าหมาย
-        inlier_points.append(c)
-
-    # คำนวณเส้นถดถอยผ่านจุดแนวเกลียว
-    x_in = np.array([p[0] for p in inlier_points], dtype=np.float64)
-    y_in = np.array([p[1] for p in inlier_points], dtype=np.float64)
-    
-    if len(x_in) >= 2:
-        slope, intercept = np.polyfit(x_in, y_in, 1)
-    else:
-        slope = target_slope
-        intercept = float(np.mean(y_in) - slope * np.mean(x_in))
-
-    abs_slope = abs(float(slope))
-    phi_deg = math.degrees(math.atan(abs_slope))
-    
-    # คำนวณมุม theta = 180 - phi (วัดจากแนวนอนฝั่งขวา ทวนเข็มนาฬิกาขึ้นไปหาเกลียวบนซ้าย)
+    # คำนวณมุมเกลียวจริง theta = 180 - phi (วัดจากแนวนอนฝั่งขวา ทวนเข็มขึ้นไปหาเกลียวบนซ้าย)
     theta_deg = 180.0 - phi_deg
 
-    return slope, intercept, phi_deg, theta_deg, inlier_points
+    # จุดศูนย์กลางของตาทั้งหมดเพื่อใช้วาดเส้นผ่านจุดกลาง
+    mean_x = float(np.mean([p[0] for p in centroids]))
+    mean_y = float(np.mean([p[1] for p in centroids]))
+
+    # คำนวณจุดตัด c (intercept) สำหรับวาดเส้น y = m*x + c
+    intercept = mean_y - (m_pixel * mean_x)
+
+    return m_pixel, intercept, phi_deg, theta_deg
 
 
 def draw_visual_overlay(pil_img, centroids, slope, intercept, phi_deg, theta_deg):
-    """วาดเส้นแนวเกลียวและเส้นฐานแนวนอน 0 องศา ให้ตรงตามรูปตัวอย่าง"""
+    """วาดเส้นแนวเกลียวสับปะรดและเส้นแนวนอน 0 องศา สีแดงตรงตามรูปอ้างอิง"""
     img_copy = pil_img.copy()
     draw = PIL.ImageDraw.Draw(img_copy)
     w, h = img_copy.size
@@ -187,9 +184,10 @@ def draw_visual_overlay(pil_img, centroids, slope, intercept, phi_deg, theta_deg
     mean_x = float(np.mean(x_coords))
     mean_y = float(np.mean(y_coords))
 
-    padding = max(50, int(w * 0.15))
-    x_min = max(0, int(np.min(x_coords)) - padding)
-    x_max = min(w, int(np.max(x_coords)) + padding)
+    # ความยาวของเส้นที่จะวาด
+    line_length = int(w * 0.4)
+    x_min = max(0, int(mean_x - line_length))
+    x_max = min(w, int(mean_x + line_length))
 
     # 1. วาดจุดตา (Green Circles)
     circle_radius = max(5, int(min(w, h) * 0.009))
@@ -207,14 +205,14 @@ def draw_visual_overlay(pil_img, centroids, slope, intercept, phi_deg, theta_deg
         )
 
     if slope is not None and intercept is not None:
-        # 2. วาดเส้นแนวนอน Baseline 0° (Red Line แบบในรูปอ้างอิง)
+        # 2. วาดเส้นแนวนอน Baseline 0° (เส้นสีแดง ตัดผ่านจุดศูนย์กลาง)
         draw.line(
             [(x_min, mean_y), (x_max, mean_y)],
             fill="#FF0000",
-            width=3,
+            width=4,
         )
 
-        # 3. วาดเส้นแนวเกลียวสับปะรด (Red Spiral Line)
+        # 3. วาดเส้นแนวเกลียวสับปะรด (เส้นสีแดง เฉียงเฉลียงผ่านกลางผล)
         y1 = slope * x_min + intercept
         y2 = slope * x_max + intercept
         draw.line(
@@ -223,10 +221,10 @@ def draw_visual_overlay(pil_img, centroids, slope, intercept, phi_deg, theta_deg
             width=4,
         )
 
-        # 4. แสดงข้อความมุม θ บนรูปภาพ
+        # 4. แสดงข้อความค่ามุม theta บนภาพ
         text_info = f"Spiral Angle (Theta) = {theta_deg:.1f} deg"
         draw.text(
-            (max(10, x_min), max(10, int(mean_y) - 40)),
+            (max(10, x_min), max(10, int(mean_y) - 45)),
             text_info,
             fill="#FFFF00",
         )
@@ -304,8 +302,10 @@ with col2:
                     "⚠️ ตรวจจับตาได้น้อยกว่า 2 จุด ไม่สามารถคำนวณเส้นถดถอยได้"
                 )
             else:
-                # คำนวณมุมเกลียวสับปะรด
-                slope, intercept, phi, theta, spiral_pts = fit_best_spiral_line(centroids)
+                # คำนวณมุมเกลียวสับปะรดด้วยอัลกอริทึมใหม่
+                slope, intercept, phi, theta = calculate_accurate_spiral_angle(
+                    centroids, img_w, img_h
+                )
 
                 st.success(
                     f"🟢 ตรวจจับตาได้ {len(centroids)} จุด | คำนวณมุมเกลียว θ = {theta:.1f}°"
@@ -317,7 +317,7 @@ with col2:
                 )
                 st.image(
                     overlay_img,
-                    caption=f"มุมเกลียวสับปะรด θ = {theta:.1f}° (วัดจากแนวนอนทวนเข็ม)",
+                    caption=f"มุมเกลียวสับปะรด θ = {theta:.1f}° (วัดจากแนวนอนฝั่งขวาทวนเข็มขึ้นไป)",
                     use_container_width=True,
                 )
 
