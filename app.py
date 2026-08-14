@@ -3,27 +3,26 @@ import os
 import cv2
 import numpy as np
 import PIL.Image
-import PIL.ImageDraw
 import streamlit as st
 from ultralytics import YOLO
 
 # -----------------------------------------------------------------------------
-# 1. Page Config
+# 1. Page Configuration
 # -----------------------------------------------------------------------------
 st.set_page_config(
-    page_title="🍍 Pineapple Brix Calculation System",
+    page_title="🍍 Precision Pineapple Brix Analyzer",
     page_icon="🍍",
     layout="wide",
 )
 
-st.title("🍍 ระบบคำนวณความหวานสับปะรด (Auto-Angle + Error Offset + Manual Model)")
-st.caption("ระบบตรวจจับพิกัดตา คำนวณมุมอัตโนมัติ ปรับแก้ Error ได้ด้วย Slider และคำนวณ Brix แบบเรียลไทม์")
+st.title("🍍 ระบบประเมินความหวานสับปะรด (YOLO + OpenCV HUD + Error Offset)")
+st.caption("วัดมุมเกลียวด้วยคณิตศาสตร์เวกเตอร์ แสดงผลกราฟิกชั้นสูงด้วย OpenCV และคำนวณ Brix ตามโมเดลที่เลือก")
 
 # -----------------------------------------------------------------------------
-# 2. Sidebar Settings
+# 2. Sidebar Controls
 # -----------------------------------------------------------------------------
 with st.sidebar:
-    st.header("⚙️ ปรับแต่งระบบ")
+    st.header("⚙️ การตั้งค่าระบบ")
     
     dist_threshold_ratio = st.slider(
         "ระยะกรองจุดตาซ้ำ (% ของภาพ):",
@@ -36,7 +35,7 @@ with st.sidebar:
     st.markdown("---")
     st.header("🍍 เลือกโมเดลสับปะรด")
     selected_model_type = st.radio(
-        "เลือกแบบจำลองสับปะรด:",
+        "ระบุประเภทโมเดล:",
         options=[
             "Model 5-8-13 (ตาใหญ่ ร่องห่าง / มุมอุดมคติ 155°)",
             "Model 8-13-21 (ตาเล็ก ร่องถี่อัดแน่น / มุมอุดมคติ 136°)"
@@ -44,17 +43,17 @@ with st.sidebar:
     )
 
 # -----------------------------------------------------------------------------
-# 3. Load Local YOLO Model
+# 3. Load Trained YOLO Model
 # -----------------------------------------------------------------------------
 @st.cache_resource
 def load_yolo_model(model_path="best.pt"):
     return YOLO(model_path)
 
 # -----------------------------------------------------------------------------
-# 4. Helper Functions
+# 4. Computer Vision & Math Functions
 # -----------------------------------------------------------------------------
 def detect_and_filter_eyes(image_path, model, img_w, img_h, ratio=2.5):
-    """ใช้ YOLO ตรวจจับพิกัดตา และกรองจุดซ้ำ"""
+    """ใช้ YOLO ตรวจจับตำแหน่งตา และกรองจุดซ้ำด้วยคำนวณระยะทาง Euclidean"""
     results = model(image_path)
     raw_centroids = []
 
@@ -83,7 +82,7 @@ def detect_and_filter_eyes(image_path, model, img_w, img_h, ratio=2.5):
     return filtered_centroids
 
 def calculate_accurate_spiral_angle(centroids, img_w, img_h):
-    """คำนวณมุมเกลียวสับปะรด (theta) ด้วยคณิตศาสตร์ Vector Regression"""
+    """คำนวณความชันและมุมเกลียวสับปะรด (theta) ด้วยเวกเตอร์ Linear Regression"""
     if len(centroids) < 2:
         return None, None, None, None
 
@@ -123,39 +122,62 @@ def calculate_accurate_spiral_angle(centroids, img_w, img_h):
 
     return m_pixel, intercept, phi_deg, theta_deg
 
-def draw_visual_overlay(pil_img, centroids, slope, intercept, phi_deg, theta_deg):
-    """วาดจุดพิกัดตาและเส้นเกลียวสับปะรดบนภาพ"""
-    img_copy = pil_img.copy()
-    draw = PIL.ImageDraw.Draw(img_copy)
-    w, h = img_copy.size
+def draw_opencv_hud_overlay(pil_img, centroids, slope, intercept, theta_deg):
+    """วาด Overlay ด้วย OpenCV สไตล์ HUD คมชัดและสวยงาม"""
+    # แปลง PIL Image เป็น OpenCV BGR Format
+    img_np = np.array(pil_img)
+    cv_img = cv2.cvtColor(img_np, cv2.COLOR_RGB2BGR)
+    overlay = cv_img.copy()
+    h, w, _ = cv_img.shape
 
-    x_coords = [p[0] for p in centroids]
-    mean_x = float(np.mean(x_coords))
-    mean_y = float(np.mean([p[1] for p in centroids]))
+    # 1. วาดจุดตำแหน่งตา (Eye Target Centroids)
+    r_outer = max(6, int(min(w, h) * 0.012))
+    r_inner = max(2, int(r_outer * 0.35))
 
-    line_length = int(w * 0.4)
-    x_min = max(0, int(mean_x - line_length))
-    x_max = min(w, int(mean_x + line_length))
-
-    circle_radius = max(5, int(min(w, h) * 0.009))
     for cx, cy in centroids:
-        draw.ellipse(
-            [cx - circle_radius, cy - circle_radius, cx + circle_radius, cy + circle_radius],
-            fill="#00FF66", outline="#000000", width=2
-        )
+        pt = (int(cx), int(cy))
+        # วงกลมชั้นนอก (สีเขียวสะท้อนแสง)
+        cv2.circle(cv_img, pt, r_outer, (0, 255, 127), 2, lineType=cv2.LINE_AA)
+        # จุดแกนกลาง (สีส้มสด)
+        cv2.circle(cv_img, pt, r_inner, (0, 165, 255), -1, lineType=cv2.LINE_AA)
 
     if slope is not None and intercept is not None:
-        draw.line([(x_min, mean_y), (x_max, mean_y)], fill="#FF0000", width=4)
-        y1, y2 = slope * x_min + intercept, slope * x_max + intercept
-        draw.line([(x_min, int(y1)), (x_max, int(y2))], fill="#FF0000", width=4)
+        mean_x = int(np.mean([p[0] for p in centroids]))
+        mean_y = int(np.mean([p[1] for p in centroids]))
+        line_len = int(w * 0.38)
 
-        text_info = f"Spiral Angle (Theta) = {theta_deg:.1f} deg"
-        draw.text((max(10, x_min), max(10, int(mean_y) - 45)), text_info, fill="#FFFF00")
+        x1, x2 = max(0, mean_x - line_len), min(w, mean_x + line_len)
+        y1, y2 = int(slope * x1 + intercept), int(slope * x2 + intercept)
 
-    return img_copy
+        # 2. วาดเส้นอ้างอิงแนวนอน (Horizontal Reference Baseline - สีฟ้า)
+        cv2.line(cv_img, (x1, mean_y), (x2, mean_y), (255, 200, 0), 2, cv2.LINE_AA)
+
+        # 3. วาดเส้นเกลียวสับปะรด (Spiral Tangent Vector Line - สีแดงนีออน)
+        cv2.line(cv_img, (x1, y1), (x2, y2), (0, 0, 255), 3, cv2.LINE_AA)
+
+        # 4. วาดกล่อง HUD สรุปข้อมูลแบบกึ่งโปร่งแสง (Semi-transparent HUD Badge)
+        badge_w, badge_h = int(w * 0.45), 70
+        bx1, by1 = 20, 20
+        bx2, by2 = bx1 + badge_w, by1 + badge_h
+
+        # สร้างพื้นหลังดำโปร่งแสง 60%
+        cv2.rectangle(overlay, (bx1, by1), (bx2, by2), (15, 15, 15), -1)
+        cv2.addWeighted(overlay, 0.6, cv_img, 0.4, 0, cv_img)
+        cv2.rectangle(cv_img, (bx1, by1), (bx2, by2), (0, 255, 255), 2, lineType=cv2.LINE_AA)
+
+        # พิมพ์ข้อความแสดงค่าองศา
+        text_title = f"DETECTED EYES: {len(centroids)} PTS"
+        text_angle = f"SPIRAL ANGLE (Theta): {theta_deg:.2f} deg"
+        
+        cv2.putText(cv_img, text_title, (bx1 + 15, by1 + 25), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (200, 200, 200), 1, cv2.LINE_AA)
+        cv2.putText(cv_img, text_angle, (bx1 + 15, by1 + 52), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2, cv2.LINE_AA)
+
+    # แปลง OpenCV BGR กลับเป็น RGB ส่งออกให้ Streamlit แสดงผล
+    rgb_result = cv2.cvtColor(cv_img, cv2.COLOR_BGR2RGB)
+    return PIL.Image.fromarray(rgb_result)
 
 def calculate_brix(theta_val, model_choice):
-    """คำนวณค่า °Brix ด้วยสูตรคณิตศาสตร์ Local Python"""
+    """คำนวณค่า °Brix ด้วยสูตรคณิตศาสตร์ Local"""
     if "Model 5-8-13" in model_choice:
         ideal_angle = 155.0
         x = abs(theta_val - ideal_angle)
@@ -170,7 +192,7 @@ def calculate_brix(theta_val, model_choice):
     return brix, x, ideal_angle, formula_str
 
 # -----------------------------------------------------------------------------
-# 5. Main UI Layout
+# 5. Main Application UI Layout
 # -----------------------------------------------------------------------------
 col1, col2 = st.columns([1, 1])
 
@@ -186,62 +208,59 @@ with col1:
         st.image(image, caption="รูปภาพต้นฉบับ", use_container_width=True)
 
 with col2:
-    st.subheader("2. ประมวลผลและคำนวณ Brix")
+    st.subheader("2. ผลการประมวลผล OpenCV & Brix")
 
     if uploaded_file is not None:
-        # ตรวจจับพิกัดตาด้วย YOLO
         try:
             yolo_model = load_yolo_model("best.pt")
             centroids = detect_and_filter_eyes(temp_path, yolo_model, img_w, img_h, dist_threshold_ratio)
         except Exception as e:
-            st.error("เกิดข้อผิดพลาดในการรันโมเดล YOLO:")
+            st.error("เกิดข้อผิดพลาดในการโหลดหรือรันโมเดล YOLO (best.pt):")
             st.exception(e)
             centroids = []
 
         if len(centroids) < 2:
-            st.warning("⚠️ ตรวจจับตาได้น้อยกว่า 2 จุด ไม่สามารถคำนวณมุมเกลียวได้")
+            st.warning("⚠️ ตรวจจับตาได้น้อยกว่า 2 จุด ไม่สามารถสร้างเส้นเวกเตอร์คำนวณมุมได้")
         else:
-            # คำนวณมุมต้นฉบับจากภาพ
+            # คำนวณมุมเกลียว
             slope, intercept, phi, raw_theta = calculate_accurate_spiral_angle(centroids, img_w, img_h)
 
-            # แสดงภาพ Overlay
-            overlay_img = draw_visual_overlay(image, centroids, slope, intercept, phi, raw_theta)
-            st.image(overlay_img, caption=f"พิกัดตาและเส้นเวกเตอร์มุมเกลียว", use_container_width=True)
+            # วาดผลลัพธ์ด้วย OpenCV
+            hud_image = draw_opencv_hud_overlay(image, centroids, slope, intercept, raw_theta)
+            st.image(hud_image, caption="ผลการประมวลผลพิกัดตาและมุมเกลียว (OpenCV HUD)", use_container_width=True)
 
             st.markdown("---")
             st.subheader("🛠️ ปรับแต่งค่าองศา Error Offset")
             
-            # Slider ปรับชดเชยค่า Error (+/- 15 องศา)
             angle_offset = st.slider(
                 "ปรับชดเชยมุม Offset (°):",
                 min_value=-15.0,
                 max_value=15.0,
                 value=0.0,
                 step=0.1,
-                help="ใช้ปรับบวก/ลบค่าองศาหากถ่ายภาพเอียงหรือมีค่า Error"
+                help="ใช้ปรับบวก/ลบค่าองศาเพื่อชดเชยุมุมเอียงจากการถ่ายภาพ"
             )
 
-            # คำนวณมุมสุดท้ายหลังปรับ Offset
+            # มุมสุทธิหลังปรับ Slider
             final_theta = raw_theta + angle_offset
 
-            # แสดงผลการเปรียบเทียบองศา
             m1, m2 = st.columns(2)
             m1.metric("มุมที่วัดได้จริงจากภาพ (Raw θ)", f"{raw_theta:.2f}°")
             m2.metric("มุมสุทธิหลังปรับ Offset (Final θ)", f"{final_theta:.2f}°", delta=f"{angle_offset:+.1f}°")
 
-            # คำนวณค่า Brix ทันที
+            # คำนวณ Brix
             brix_val, x_diff, ideal_deg, formula_used = calculate_brix(final_theta, selected_model_type)
 
             st.markdown("---")
-            st.markdown("### 📊 ผลการคำนวณค่าความหวาน")
+            st.markdown("### 📊 ผลการประเมินความหวาน")
             
             st.success(f"🍬 **ค่าความหวานประเมิน:** `{brix_val:.2f} °Brix`")
             
-            with st.expander("🔍 ดูรายละเอียดการคำนวณ"):
+            with st.expander("🔍 ดูรายละเอียดขั้นตอนการคำนวณ"):
                 st.write(f"- **โมเดลที่เลือก:** {selected_model_type}")
                 st.write(f"- **มุมอุดมคติของโมเดล:** {ideal_deg:.1f}°")
                 st.write(f"- **ผลต่างองศา ($x = |\\theta - \\text{{ideal}}|$):** `{x_diff:.2f}°`")
-                st.write(f"- **สมการที่ใช้:** `{formula_used}`")
+                st.write(f"- **สมการที่ใช้คำนวณ:** `{formula_used}`")
 
         if os.path.exists(temp_path):
             os.remove(temp_path)
