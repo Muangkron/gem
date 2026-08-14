@@ -1,184 +1,181 @@
-import streamlit as st
+import math
+import os
 import cv2
 import numpy as np
-import math
-from PIL import Image
+import PIL.Image
+import streamlit as st
 from ultralytics import YOLO
 
-# ==========================================
-# 1. PAGE CONFIG & STYLING
-# ==========================================
-st.set_page_config(
-    page_title="Brix Estimation from Keypoints Angle",
-    page_icon="🍇",
-    layout="wide"
-)
+# -----------------------------------------------------------------------------
+# 1. Config & Sidebar Controls
+# -----------------------------------------------------------------------------
+st.set_page_config(page_title="Pineapple Eye & Brix Analyzer", page_icon="🍍", layout="wide")
+st.title("🍍 ระบบวัดมุมเกลียวตา & ประเมินความหวาน (°Brix)")
 
-st.title("🍇 ระบบวิเคราะห์ค่า Brix จากมุมเกลียวด้วย YOLO Pose")
-st.markdown("คำนวณมุมจาก **แกน X ด้านขวา (0°)** หมุน **ทวนเข็มนาฬิกา (0° - 360°)** ไปยังตำแหน่งจุดเกลียว")
+with st.sidebar:
+    st.header("⚙️ 1. เลือกโมเดลสับปะรด")
+    model_choice = st.radio(
+        "ระบุโมเดล:",
+        options=[
+            "Model 5-8-13 (มุมอุดมคติ 155°)",
+            "Model 8-13-21 (มุมอุดมคติ 136°)"
+        ]
+    )
 
-# ==========================================
-# 2. HELPER FUNCTIONS
-# ==========================================
-def calculate_angle_ccw(p_origin, p_target):
-    """
-    คำนวณมุมจากแกน X ด้านขวา (0 องศา) หมุนทวนเข็มนาฬิกาไปยัง p_target
-    p_origin : (x, y) จุดหมุน / จุดโคน
-    p_target : (x, y) จุดปลาย / จุดเกลียว
-    """
-    dx = p_target[0] - p_origin[0]
-    # กลับทิศแกน Y เนื่องจาก OpenCV Y=0 อยู่ที่ขอบบนของภาพ
-    dy = -(p_target[1] - p_origin[1])
+    st.markdown("---")
+    st.header("🛠️ 2. สไลเดอร์ปรับค่า Error")
     
-    angle = math.degrees(math.atan2(dy, dx))
-    
-    # ปรับช่วงให้อยู่ระหว่าง 0 ถึง 360 องศา
-    if angle < 0:
-        angle += 360
-        
-    return angle
+    # สไลเดอร์ปรับชดเชยจุดตา (Eye Position Offset / Filter)
+    eye_dist_ratio = st.slider("ระยะกรองจุดตาซ้ำ (% ภาพ):", 1.0, 5.0, 2.5, 0.5)
+    eye_offset_y = st.slider("ขยับชดเชยตำแหน่งจุดตา Y (px):", -20, 20, 0, 1)
 
-def calc_brix_m1(angle):
-    """Model 1 (5-8-13): x = |angle - 155|"""
-    x = abs(angle - 155)
-    return -0.0196 * (x**2) + 0.0045 * x + 16.757
+    # สไลเดอร์ปรับชดเชยมุม
+    angle_offset = st.slider("ปรับชดเชยมุม Angle Offset (°):", -15.0, 15.0, 0.0, 0.1)
 
-def calc_brix_m2(angle):
-    """Model 2 (8-13-21): x = |angle - 136|"""
-    x = abs(angle - 136)
-    return 0.0082 * (x**2) - 0.6667 * x + 16.362
-
+# -----------------------------------------------------------------------------
+# 2. YOLO Model Load
+# -----------------------------------------------------------------------------
 @st.cache_resource
-def load_yolo_model(model_path="best.pt"):
-    """โหลดโมเดล YOLO และใช้ Cache เพื่อไม่ให้โหลดซ้ำทุกครั้งที่กดปุ่ม"""
-    return YOLO(model_path)
+def load_yolo():
+    return YOLO("best.pt")
 
-# ==========================================
-# 3. SIDEBAR & MODEL INITIALIZATION
-# ==========================================
-st.sidebar.header("⚙️ การตั้งค่าระบบ")
-
-# ตัวเลือกโมเดล
-selected_model_name = st.sidebar.selectbox(
-    "เลือกสูตรโมเดลคำนวณ Brix:",
-    ["Model 1 (Keypoints 5-8-13)", "Model 2 (Keypoints 8-13-21)"]
-)
-
-conf_threshold = st.sidebar.slider("Confidence Threshold", 0.1, 1.0, 0.25, 0.05)
-
-# ตัวเลือกกรณี Index ของคุณเริ่มจาก 1 ในฉลาก
-index_offset = st.sidebar.checkbox("ปรับ Index แบบ 1-based (ลบ 1 จาก Index โค้ด)", value=False)
-
-uploaded_file = st.sidebar.file_uploader("อัปโหลดภาพที่ต้องการทดสอบ...", type=["jpg", "jpeg", "png"])
-
-# โหลดไฟล์ best.pt
-try:
-    model = load_yolo_model("best.pt")
-    st.sidebar.success("โหลดไฟล์ `best.pt` สำเร็จ!")
-except Exception as e:
-    st.sidebar.error(f"ไม่สามารถโหลดไฟล์ best.pt ได้: {e}")
-    st.info("กรุณาตรวจสอบว่ามีไฟล์ `best.pt` วางอยู่ในโฟลเดอร์เดียวกับ `app.py` บน GitHub")
-    st.stop()
-
-# ==========================================
-# 4. MAIN PROCESSING LOGIC
-# ==========================================
-if uploaded_file is not None:
-    # อ่านรูปภาพ
-    file_bytes = np.asarray(bytearray(uploaded_file.read()), dtype=np.uint8)
-    image = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
-    annotated_img = image.copy()
+# -----------------------------------------------------------------------------
+# 3. Processing Functions
+# -----------------------------------------------------------------------------
+def get_filtered_eyes(image_path, model, img_w, img_h, ratio, offset_y):
+    """ตรวจจับและปรับ Offset พิกัดจุดตา"""
+    results = model(image_path)
+    raw_points = []
     
-    # รัน YOLO Pose Inference
-    results = model(image, conf=conf_threshold)
-    
-    # ตรวจสอบการพบ Keypoints
-    if len(results) > 0 and results[0].keypoints is not None and len(results[0].keypoints) > 0:
-        # ดึง Keypoints ของวัตถุชิ้นแรกที่ตรวจพบ
-        keypoints = results[0].keypoints.xy.cpu().numpy()[0]
-        
-        # กำหนดดัชนีจุด Origin (จุดโคน) และ Target (จุดเกลียว)
-        if "Model 1" in selected_model_name:
-            raw_origin_idx, raw_target_idx = 8, 13
-            calc_brix_fn = calc_brix_m1
-        else:
-            raw_origin_idx, raw_target_idx = 13, 21
-            calc_brix_fn = calc_brix_m2
+    for r in results:
+        for box in r.boxes:
+            x, y, w, h = box.xywh[0].tolist()
+            raw_points.append((x, y + offset_y))  # ประยุกต์ Eye Offset Y
 
-        # ปรับ Index ตามออฟเซ็ต
-        origin_idx = raw_origin_idx - 1 if index_offset else raw_origin_idx
-        target_idx = raw_target_idx - 1 if index_offset else raw_target_idx
-        
-        max_required_idx = max(origin_idx, target_idx)
-        
-        if max_required_idx < len(keypoints):
-            p_origin = keypoints[origin_idx]
-            p_target = keypoints[target_idx]
+    if not raw_points:
+        return []
+
+    # กรองจุดซ้ำ
+    min_dist = (min(img_w, img_h) * ratio) / 100.0
+    filtered = []
+    for p in raw_points:
+        if not any(math.hypot(p[0] - f[0], p[1] - f[1]) < min_dist for f in filtered):
+            filtered.append(p)
             
-            # ตรวจสอบว่าพิกัดถูกต้อง (ไม่เป็น [0,0])
-            if np.all(p_origin > 0) and np.all(p_target > 0):
-                # คำนวณมุมทวนเข็มนาฬิกาจากแกน X
-                angle = calculate_angle_ccw(p_origin, p_target)
-                
-                # คำนวณค่า Brix
-                brix_val = calc_brix_fn(angle)
-                
-                # --- พล็อตจุดและเส้นบนภาพ ---
-                pt_origin = tuple(p_origin.astype(int))
-                pt_target = tuple(p_target.astype(int))
-                
-                # 1. วาดเส้นแกน X อ้างอิง (แกนแนวนอนชี้ไปทางขวา สีเหลือง)
-                axis_length = 60
-                ref_x_end = (pt_origin[0] + axis_length, pt_origin[1])
-                cv2.line(annotated_img, pt_origin, ref_x_end, (0, 255, 255), 2, cv2.LINE_AA)
-                cv2.putText(annotated_img, "0 deg (X-axis)", (ref_x_end[0] + 5, ref_x_end[1] + 5),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 255), 1)
+    return filtered
 
-                # 2. วาดเส้นเวกเตอร์ไปยังจุดเกลียว (สีเขียว)
-                cv2.line(annotated_img, pt_origin, pt_target, (0, 255, 0), 2, cv2.LINE_AA)
-                
-                # 3. วาดจุดวงกลม Origin & Target
-                cv2.circle(annotated_img, pt_origin, 7, (0, 0, 255), -1)  # จุด Origin สีแดง
-                cv2.circle(annotated_img, pt_target, 7, (255, 0, 0), -1)  # จุด Target สีฟ้า
-                
-                # ข้อความแสดงเลข Keypoint
-                cv2.putText(annotated_img, f"Origin P{raw_origin_idx}", (pt_origin[0] - 20, pt_origin[1] - 10),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
-                cv2.putText(annotated_img, f"Target P{raw_target_idx}", (pt_target[0] + 10, pt_target[1] - 10),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 2)
+def calculate_angle(centroids, img_h):
+    """คำนวณมุมเกลียวด้วย Vector Regression"""
+    if len(centroids) < 2:
+        return None, None, None
 
-                # แสดงมุมตรงกลางภาพ
-                cv2.putText(annotated_img, f"Angle: {angle:.1f} deg", (pt_origin[0] - 40, pt_origin[1] + 30),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+    min_d, max_d = img_h * 0.05, img_h * 0.30
+    slopes = []
 
-                # --- layout การแสดงผลบน STREAMLIT ---
-                col1, col2 = st.columns([2, 1])
-                
-                with col1:
-                    st.image(
-                        cv2.cvtColor(annotated_img, cv2.COLOR_BGR2RGB), 
-                        caption="ผลการตรวจจับจุดและพล็อตมุมวัดจากแกน X", 
-                        use_container_width=True
-                    )
-                    
-                with col2:
-                    st.subheader("🎯 ผลการวิเคราะห์")
-                    st.metric(label="มุมทวนเข็มจากแกน X (Angle)", value=f"{angle:.2f}°")
-                    st.metric(label="ค่า Brix ประเมิน", value=f"{brix_val:.2f} °Bx")
-                    
-                    st.markdown("---")
-                    st.markdown("### 📍 พิกัดจุดที่ใช้คำนวณ")
-                    st.write(f"- **จุดโคน (Origin P{raw_origin_idx}):** `{pt_origin}`")
-                    st.write(f"- **จุดปลายเกลียว (Target P{raw_target_idx}):** `{pt_target}`")
-                    st.write(f"- **ความต่าง $\Delta X, \Delta Y$:** `dx={pt_target[0]-pt_origin[0]}, dy={-(pt_target[1]-pt_origin[1])}`")
-            else:
-                st.warning("ไม่พบค่าน้ำหนัก Keypoints ที่สมบูรณ์สำหรับจุดที่เลือก")
-                st.image(cv2.cvtColor(image, cv2.COLOR_BGR2RGB), use_container_width=True)
-        else:
-            st.error(f"โมเดล ตรวจจับได้เพียง {len(keypoints)} จุด ไม่ครอบคลุม Index P{max_required_idx}")
-            st.image(cv2.cvtColor(image, cv2.COLOR_BGR2RGB), use_container_width=True)
+    n = len(centroids)
+    for i in range(n):
+        for j in range(n):
+            if i != j:
+                p1, p2 = centroids[i], centroids[j]
+                dx, dy = p2[0] - p1[0], p2[1] - p1[1]
+                if dx > 10 and dy > 10:
+                    dist = math.hypot(dx, dy)
+                    if min_d <= dist <= max_d:
+                        m = dy / dx
+                        if 0.35 <= m <= 2.5:
+                            slopes.append(m)
+
+    m_px = float(np.median(slopes)) if slopes else abs(float(np.polyfit([p[0] for p in centroids], [p[1] for p in centroids], 1)[0]))
+    
+    phi = math.degrees(math.atan(m_px))
+    raw_theta = 180.0 - phi
+    
+    mean_x, mean_y = np.mean([p[0] for p in centroids]), np.mean([p[1] for p in centroids])
+    intercept = mean_y - (m_px * mean_x)
+
+    return m_px, intercept, raw_theta
+
+def draw_hud(pil_img, centroids, slope, intercept, theta):
+    """วาดพล็อตจุดตาและเส้นวัดมุมด้วย OpenCV"""
+    cv_img = cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
+    h, w, _ = cv_img.shape
+
+    # 1. พล็อตจุดตา (Target Circles)
+    for cx, cy in centroids:
+        pt = (int(cx), int(cy))
+        cv2.circle(cv_img, pt, 6, (0, 255, 127), 2, cv2.LINE_AA)  # วงเขียว
+        cv2.circle(cv_img, pt, 2, (0, 165, 255), -1, cv2.LINE_AA) # จุดส้ม
+
+    # 2. วาดเส้นเกลียวและเส้นแนวนอน
+    if slope is not None and intercept is not None:
+        mean_x, mean_y = int(np.mean([p[0] for p in centroids])), int(np.mean([p[1] for p in centroids]))
+        l_len = int(w * 0.35)
+        
+        x1, x2 = max(0, mean_x - l_len), min(w, mean_x + l_len)
+        y1, y2 = int(slope * x1 + intercept), int(slope * x2 + intercept)
+
+        cv2.line(cv_img, (x1, mean_y), (x2, mean_y), (255, 200, 0), 2, cv2.LINE_AA) # Baseline (ฟ้า)
+        cv2.line(cv_img, (x1, y1), (x2, y2), (0, 0, 255), 3, cv2.LINE_AA)            # Spiral Vector (แดง)
+
+    return PIL.Image.fromarray(cv2.cvtColor(cv_img, cv2.COLOR_BGR2RGB))
+
+def calc_brix(theta, model_name):
+    """คำนวณ Brix ตามโมเดลที่เลือก"""
+    if "Model 5-8-13" in model_name:
+        x = abs(theta - 155.0)
+        brix = (-0.0196 * (x**2)) + (0.0045 * x) + 16.757
     else:
-        st.warning("ไม่พบวัตถุหรือ Keypoints ในรูปภาพนี้ กรุณาปรับค่า Confidence Threshold ที่ Sidebar")
-        st.image(cv2.cvtColor(image, cv2.COLOR_BGR2RGB), use_container_width=True)
-else:
-    st.info("👈 กรุณาอัปโหลดรูปภาพผ่านทาง Sidebar ด้านซ้ายมือเพื่อเริ่มต้น")
+        x = abs(theta - 136.0)
+        brix = (0.0082 * (x**2)) - (0.6667 * x) + 16.362
+    return brix, x
+
+# -----------------------------------------------------------------------------
+# 4. Main Layout
+# -----------------------------------------------------------------------------
+uploaded_file = st.file_uploader("อัปโหลดรูปภาพสับปะรด", type=["jpg", "jpeg", "png"])
+
+if uploaded_file is not None:
+    col1, col2 = st.columns([1.2, 1])
+
+    image = PIL.Image.open(uploaded_file).convert("RGB")
+    temp_path = "temp_img.jpg"
+    image.save(temp_path)
+    img_w, img_h = image.size
+
+    # โหลด YOLO และประมวลผล
+    try:
+        model = load_yolo()
+        eyes = get_filtered_eyes(temp_path, model, img_w, img_h, eye_dist_ratio, eye_offset_y)
+    except Exception as e:
+        st.error(f"เกิดข้อผิดพลาดในการรัน YOLO: {e}")
+        eyes = []
+
+    with col1:
+        if len(eyes) >= 2:
+            slope, intercept, raw_theta = calculate_angle(eyes, img_h)
+            final_theta = raw_theta + angle_offset
+            
+            # วาดผลลัพธ์
+            out_img = draw_hud(image, eyes, slope, intercept, final_theta)
+            st.image(out_img, caption="พล็อตจุดตา + เส้นวัดมุมเกลียว", use_container_width=True)
+        else:
+            st.warning("ตรวจจับจุดตาได้ไม่เพียงพอต่อการหามุม")
+            st.image(image, use_container_width=True)
+
+    with col2:
+        st.subheader("📊 ผลการวัดองศา & Brix")
+        
+        if len(eyes) >= 2:
+            m1, m2 = st.columns(2)
+            m1.metric("จำนวนตาที่พบ", f"{len(eyes)} จุด")
+            m2.metric("มุมเกลียวสุทธิ (Final θ)", f"{final_theta:.2f}°", delta=f"{angle_offset:+.1f}°")
+
+            # คำนวณความหวาน
+            brix_value, diff_x = calc_brix(final_theta, model_choice)
+
+            st.markdown("---")
+            st.metric("🍬 ค่าความหวานประเมิน", f"{brix_value:.2f} °Brix")
+            st.info(f"📍 ผลต่างจากมุมอุดมคติ ($x$): `{diff_x:.2f}°`")
+
+    if os.path.exists(temp_path):
+        os.remove(temp_path)
