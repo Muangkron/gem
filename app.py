@@ -45,25 +45,31 @@ def get_filtered_eyes(image_path, model, img_w, img_h, ratio):
 
 def straighten_pineapple_image(cv_img, centroids):
     """
-    คำนวณมุมเอียงหลักของผลสับปะรด และทำการหมุนรูปภาพ (Image Rotation)
-    เพื่อให้ผลสับปะรดตั้งตรงเป๊ะ พร้อมปรับพิกัดจุดตาตามการหมุน
+    คำนวณมุมเอียงหลักของผลสับปะรดด้วย Pure NumPy (ไม่พึ่ง cv2.PCACompute)
+    เพื่อดัดภาพให้ตั้งตรงเป๊ะ และปรับพิกัดจุดตาตามการหมุน
     """
     if len(centroids) < 2:
         return cv_img, centroids
 
     h, w = cv_img.shape[:2]
-    mean_x = float(np.mean([p[0] for p in centroids]))
-    mean_y = float(np.mean([p[1] for p in centroids]))
-
-    # หาแกนความเอียงหลักของกลุ่มตาด้วย Principal Component Analysis (PCA)
     pts = np.array(centroids, dtype=np.float32)
-    mean, eigenvectors = cv2.pcaCompute(pts, mean=np.empty((0)))
     
-    # คำนวณมุมเอียงของแกนหลัก (Tilt Angle)
-    angle_rad = math.atan2(eigenvectors[0, 1], eigenvectors[0, 0])
-    tilt_deg = math.degrees(angle_rad)
+    mean_x = float(np.mean(pts[:, 0]))
+    mean_y = float(np.mean(pts[:, 1]))
 
-    # ปรับแกนให้อยู่ในแนวตั้ง (Upright Position ~ -90° หรือ 90°)
+    # คำนวณ PCA ด้วย Pure NumPy (Covariance Matrix & Eigenvectors)
+    centered_pts = pts - np.array([mean_x, mean_y])
+    cov_matrix = np.cov(centered_pts, rowvar=False)
+    
+    if cov_matrix.shape == (2, 2):
+        evals, evecs = np.linalg.eigh(cov_matrix)
+        primary_vec = evecs[:, np.argmax(evals)]  # Principal eigenvector
+        angle_rad = math.atan2(primary_vec[1], primary_vec[0])
+        tilt_deg = math.degrees(angle_rad)
+    else:
+        tilt_deg = 0.0
+
+    # ปรับแกนให้อยู่ในแนวตั้ง (Upright Position)
     if tilt_deg > 45:
         correction_deg = tilt_deg - 90
     elif tilt_deg < -45:
@@ -80,7 +86,7 @@ def straighten_pineapple_image(cv_img, centroids):
         borderValue=(255, 255, 255)
     )
 
-    # Transform พิกัดจุดตาไปยังตำแหน่งใหม่ในภาพที่หมุนแล้ว
+    # Transform พิกัดจุดตาไปยังตำแหน่งใหม่บนภาพที่ตั้งตรงแล้ว
     ones = np.ones(shape=(len(centroids), 1))
     points_ones = np.hstack([pts, ones])
     transformed_pts = rot_matrix.dot(points_ones.T).T
@@ -200,7 +206,7 @@ if uploaded_file is not None:
         raw_eyes = []
 
     if len(raw_eyes) >= 2:
-        # 1. ดัดภาพสับปะรดให้ตั้งตรงอัตโนมัติ (Straighten Pineapple)
+        # 1. ดัดภาพสับปะรดให้ตั้งตรงอัตโนมัติด้วย Pure NumPy
         cv_img_orig = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
         straight_cv_img, straight_eyes = straighten_pineapple_image(cv_img_orig, raw_eyes)
 
@@ -217,7 +223,6 @@ if uploaded_file is not None:
                 st.session_state.manual_angle = float(round(auto_theta, 2))
                 st.rerun()
 
-            # สไลเดอร์ระดับ ละเอียด 0.01 องศา เพื่อความสมูทสูงสุด
             current_theta = st.slider(
                 "ปรับหมุนองศาเส้นสีแดง (Theta °):",
                 min_value=90.00,
