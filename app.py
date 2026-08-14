@@ -7,36 +7,10 @@ import streamlit as st
 from ultralytics import YOLO
 
 # -----------------------------------------------------------------------------
-# 1. Config & Sidebar Controls
+# 1. Config & Page Setup
 # -----------------------------------------------------------------------------
 st.set_page_config(page_title="Pineapple Eye & Brix Analyzer", page_icon="🍍", layout="wide")
-st.title("🍍 ระบบพล็อตจุดตา หมุนเส้นวัดมุมเกลียว & คำนวณความหวาน (°Brix)")
-
-with st.sidebar:
-    st.header("⚙️ 1. เลือกโมเดลสับปะรด")
-    model_choice = st.radio(
-        "ระบุประเภทโมเดล:",
-        options=[
-            "Model 5-8-13 (มุมอุดมคติ 155°)",
-            "Model 8-13-21 (มุมอุดมคติ 136°)"
-        ]
-    )
-
-    st.markdown("---")
-    st.header("🛠️ 2. ปรับแต่งองศาและจุดตา")
-    
-    # สไลเดอร์กรองระยะห่างจุดซ้ำ
-    eye_dist_ratio = st.slider("ระยะกรองจุดตาซ้ำ (% ของภาพ):", 1.0, 5.0, 2.5, 0.5)
-
-    # สไลเดอร์หมุนเส้นชดเชยมุมเอียง (เมื่อปรับ เส้นสีแดงบนรูปจะหมุนตามทันที)
-    angle_offset = st.slider(
-        "🔄 หมุนปรับเส้นมุมเกลียว (Angle Offset °):",
-        min_value=-20.0,
-        max_value=20.0,
-        value=0.0,
-        step=0.1,
-        help="ลากสไลเดอร์นี้เพื่อหมุนเส้นสีแดงให้ทาบตรงกับร่องเกลียวสับปะรดเป๊ะๆ"
-    )
+st.title("🍍 ระบบวัดมุมเกลียวสับปะรดแบบ Interactive Line Rotation & Brix Calculator")
 
 # -----------------------------------------------------------------------------
 # 2. YOLO Model Load
@@ -49,7 +23,7 @@ def load_yolo():
 # 3. Processing Functions
 # -----------------------------------------------------------------------------
 def get_filtered_eyes(image_path, model, img_w, img_h, ratio):
-    """ตรวจจับและกรองจุดซ้ำ"""
+    """ตรวจจับและกรองจุดตาซ้ำ"""
     results = model(image_path)
     raw_points = []
     
@@ -69,10 +43,10 @@ def get_filtered_eyes(image_path, model, img_w, img_h, ratio):
             
     return filtered
 
-def calculate_base_angle(centroids, img_h):
-    """คำนวณมุมเกลียวตั้งต้น (Raw Theta) จาก Vector Regression"""
+def calculate_auto_angle(centroids, img_h):
+    """คำนวณมุม Auto ตั้งต้นจาก Vector Regression"""
     if len(centroids) < 2:
-        return None
+        return 145.0  # Default fallback angle
 
     min_d, max_d = img_h * 0.05, img_h * 0.30
     slopes = []
@@ -92,45 +66,48 @@ def calculate_base_angle(centroids, img_h):
 
     m_px = float(np.median(slopes)) if slopes else abs(float(np.polyfit([p[0] for p in centroids], [p[1] for p in centroids], 1)[0]))
     phi = math.degrees(math.atan(m_px))
-    raw_theta = 180.0 - phi
-    
-    return raw_theta
+    return 180.0 - phi
 
-def draw_hud_with_rotated_line(pil_img, centroids, final_theta):
-    """วาดพล็อตจุดตา และคำนวณหมุนเส้นเวกเตอร์สีแดงตาม final_theta"""
+def draw_hud_with_rotatable_line(pil_img, centroids, target_theta):
+    """วาดพล็อตจุดตา และวาดเส้นสีแดงที่หมุนตามมุม target_theta ตรงๆ"""
     cv_img = cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
     h, w, _ = cv_img.shape
 
-    # 1. พล็อตจุดตา (Target Circles)
+    # 1. พล็อตจุดตา (Eye Target Circles)
     for cx, cy in centroids:
         pt = (int(cx), int(cy))
         cv2.circle(cv_img, pt, 6, (0, 255, 127), 2, cv2.LINE_AA)  # วงกลมเขียว
-        cv2.circle(cv_img, pt, 2, (0, 165, 255), -1, cv2.LINE_AA) # จุดส้มกลางตา
+        cv2.circle(cv_img, pt, 2, (0, 165, 255), -1, cv2.LINE_AA) # จุดกลางส้ม
 
-    if final_theta is not None and len(centroids) >= 2:
-        # คำนวณจุดศูนย์กลางของกลุ่มตา (Center of Mass)
+    if len(centroids) >= 2:
+        # จุดหมุนกลาง (Center of Rotation) จากพิกัดเฉลี่ยของตา
         mean_x = float(np.mean([p[0] for p in centroids]))
         mean_y = float(np.mean([p[1] for p in centroids]))
 
-        # แปลง final_theta กลับมาเป็นความชัน m เพื่อวาดเส้นหมุนจริง
-        phi_deg = 180.0 - final_theta
-        m_pixel = math.tan(math.radians(phi_deg))
+        # แปลงมุม target_theta ให้เป็น ความชัน (Slope m) เพื่อวาดเส้น
+        phi_deg = 180.0 - target_theta
+        # ป้องกัน tan(90) หรือค่าใกล้เคียง
+        phi_rad = math.radians(max(0.1, min(89.9, phi_deg)))
+        m_pixel = math.tan(phi_rad)
         intercept = mean_y - (m_pixel * mean_x)
 
-        l_len = int(w * 0.38)
+        l_len = int(w * 0.40)
         x1, x2 = max(0, int(mean_x - l_len)), min(w, int(mean_x + l_len))
         y1, y2 = int(m_pixel * x1 + intercept), int(m_pixel * x2 + intercept)
 
-        # 2. วาดเส้นอ้างอิงแนวนอน (Baseline - ฟ้า)
+        # 2. วาดเส้นอ้างอิงแนวนอน (Baseline 180° - สีฟ้า)
         cv2.line(cv_img, (x1, int(mean_y)), (x2, int(mean_y)), (255, 200, 0), 2, cv2.LINE_AA)
 
-        # 3. วาดเส้นเกลียวสับปะรดที่หมุนตาม Slider (Spiral Vector - แดง)
+        # 3. วาดเส้นหมุนวัดมุมตาม Slider (Measurement Line - สีแดง)
         cv2.line(cv_img, (x1, y1), (x2, y2), (0, 0, 255), 3, cv2.LINE_AA)
+
+        # 4. วาดส่วนโค้งแสดงมุม (Angle Arc Indicator)
+        cv2.ellipse(cv_img, (int(mean_x), int(mean_y)), (40, 40), 0, 180, 180 - phi_deg, (0, 255, 255), 2, cv2.LINE_AA)
 
     return PIL.Image.fromarray(cv2.cvtColor(cv_img, cv2.COLOR_BGR2RGB))
 
 def calc_brix(theta, model_name):
-    """คำนวณ Brix ตามโมเดลที่เลือก"""
+    """คำนวณ Brix จากองศาของเส้นที่หมุนอยู่"""
     if "Model 5-8-13" in model_name:
         ideal_deg = 155.0
         x = abs(theta - ideal_deg)
@@ -142,7 +119,24 @@ def calc_brix(theta, model_name):
     return brix, x, ideal_deg
 
 # -----------------------------------------------------------------------------
-# 4. Main Layout
+# 4. Sidebar Controls
+# -----------------------------------------------------------------------------
+with st.sidebar:
+    st.header("⚙️ 1. เลือกโมเดลสับปะรด")
+    model_choice = st.radio(
+        "ระบุประเภทโมเดล:",
+        options=[
+            "Model 5-8-13 (มุมอุดมคติ 155°)",
+            "Model 8-13-21 (มุมอุดมคติ 136°)"
+        ]
+    )
+
+    st.markdown("---")
+    st.header("🛠️ 2. ปรับตำแหน่งจุดตา")
+    eye_dist_ratio = st.slider("ระยะกรองจุดตาซ้ำ (% ของภาพ):", 1.0, 5.0, 2.5, 0.5)
+
+# -----------------------------------------------------------------------------
+# 5. Main Application UI Layout
 # -----------------------------------------------------------------------------
 uploaded_file = st.file_uploader("อัปโหลดรูปภาพสับปะรด", type=["jpg", "jpeg", "png"])
 
@@ -154,7 +148,7 @@ if uploaded_file is not None:
     image.save(temp_path)
     img_w, img_h = image.size
 
-    # โหลด YOLO และประมวลผลหาพิกัดตา
+    # Detect Eyes
     try:
         model = load_yolo()
         eyes = get_filtered_eyes(temp_path, model, img_w, img_h, eye_dist_ratio)
@@ -162,37 +156,54 @@ if uploaded_file is not None:
         st.error(f"เกิดข้อผิดพลาดในการรัน YOLO: {e}")
         eyes = []
 
-    with col1:
-        if len(eyes) >= 2:
-            # คำนวณมุมตั้งต้น + รวมค่าหมุนจาก Slider
-            raw_theta = calculate_base_angle(eyes, img_h)
-            final_theta = raw_theta + angle_offset
+    if len(eyes) >= 2:
+        # คำนวณมุม Auto ไว้เป็นค่าอ้างอิง
+        auto_theta = calculate_auto_angle(eyes, img_h)
+
+        # ใช้ Session State เก็บค่ามุมที่หมุนอยู่
+        if "manual_angle" not in st.session_state:
+            st.session_state.manual_angle = float(round(auto_theta, 1))
+
+        with col2:
+            st.subheader("📐 หมุนเส้นวัดมุมเกลียว (Manual Rotation)")
             
-            # วาดรูปภาพพร้อมเส้นสีแดงที่หมุนตาม final_theta
-            out_img = draw_hud_with_rotated_line(image, eyes, final_theta)
-            st.image(out_img, caption="ภาพแสดงจุดตาและเส้นเกลียว (ลาก Slider ด้านข้างเพื่อหมุนเส้นแดง)", use_container_width=True)
-        else:
-            st.warning("⚠️ ตรวจจับจุดตาได้น้อยกว่า 2 จุด ไม่สามารถสร้างเส้นวัดมุมได้")
-            st.image(image, use_container_width=True)
+            # ปุ่มดึงค่า Auto กลับมาตั้งต้น
+            if st.button("🎯 ดึงมุมจาก AI Auto เป็นค่าเริ่มต้น"):
+                st.session_state.manual_angle = float(round(auto_theta, 1))
+                st.rerun()
 
-    with col2:
-        st.subheader("📊 ผลการวัดองศา & Brix")
-        
-        if len(eyes) >= 2:
-            m1, m2 = st.columns(2)
-            m1.metric("จำนวนตาที่พบ", f"{len(eyes)} จุด")
-            m2.metric("มุมเกลียวสุทธิ (Final θ)", f"{final_theta:.2f}°", delta=f"{angle_offset:+.1f}°")
+            # สไลเดอร์หมุนเส้นตรงๆ
+            current_theta = st.slider(
+                "ปรับหมุนองศาเส้นสีแดง (Theta °):",
+                min_value=95.0,
+                max_value=175.0,
+                value=float(st.session_state.manual_angle),
+                step=0.1,
+                help="ลากเพื่อหมุนเส้นสีแดงให้ตรงกับร่องเกลียวตาบนภาพ"
+            )
+            st.session_state.manual_angle = current_theta
 
-            # คำนวณ Brix
-            brix_value, diff_x, ideal_angle = calc_brix(final_theta, model_choice)
+            # คำนวณ Brix จากมุมที่หมุนเส้นอยู่นี้
+            brix_val, diff_x, ideal_angle = calc_brix(current_theta, model_choice)
 
             st.markdown("---")
-            st.metric("🍬 ค่าความหวานประเมิน", f"{brix_value:.2f} °Brix")
+            st.subheader("📊 ผลการคำนวณ Brix")
             
-            st.info(f"""
-            - **มุมอุดมคติของโมเดล:** `{ideal_angle:.1f}°`
-            - **ผลต่างองศา ($x = |\\theta - \\text{{ideal}}|$):** `{diff_x:.2f}°`
-            """)
+            m1, m2 = st.columns(2)
+            m1.metric("จำนวนตาที่พบ", f"{len(eyes)} จุด")
+            m2.metric("มุมของเส้นปัจจุบัน (θ)", f"{current_theta:.1f}°")
+
+            st.metric("🍬 ค่าความหวานประเมิน", f"{brix_val:.2f} °Brix")
+            st.info(f"📍 มุมอุดมคติ: `{ideal_angle:.1f}°` | ผลต่าง ($x$): `{diff_x:.2f}°`")
+
+        with col1:
+            # วาดรูปโดยให้เส้นสีแดงหมุนตามค่า current_theta ที่ปรับบน Slider เป๊ะๆ
+            out_img = draw_hud_with_rotatable_line(image, eyes, current_theta)
+            st.image(out_img, caption=f"เส้นสีแดงกำลังวัดมุมที่ {current_theta:.1f}° (ปรับหมุนได้ที่แผงขวามือ)", use_container_width=True)
+
+    else:
+        st.warning("⚠️ ตรวจจับจุดตาได้น้อยกว่า 2 จุด ไม่สามารถสร้างจุดหมุนวัดมุมได้")
+        st.image(image, use_container_width=True)
 
     if os.path.exists(temp_path):
         os.remove(temp_path)
