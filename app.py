@@ -99,7 +99,6 @@ if uploaded_file is not None:
         
         # กำหนดดัชนีจุด Origin (จุดโคน) และ Target (จุดเกลียว)
         if "Model 1" in selected_model_name:
-            # ใช้จุด 8 เป็นจุดโคน และ 13 เป็นจุดเกลียว (หรือปรับตามจุดที่คุณกำหนด)
             raw_origin_idx, raw_target_idx = 8, 13
             calc_brix_fn = calc_brix_m1
         else:
@@ -159,7 +158,7 @@ if uploaded_file is not None:
                     st.image(
                         cv2.cvtColor(annotated_img, cv2.COLOR_BGR2RGB), 
                         caption="ผลการตรวจจับจุดและพล็อตมุมวัดจากแกน X", 
-                        use_column_width=True
+                        use_container_width=True
                     )
                     
                 with col2:
@@ -174,12 +173,12 @@ if uploaded_file is not None:
                     st.write(f"- **ความต่าง $\Delta X, \Delta Y$:** `dx={pt_target[0]-pt_origin[0]}, dy={-(pt_target[1]-pt_origin[1])}`")
             else:
                 st.warning("ไม่พบค่าน้ำหนัก Keypoints ที่สมบูรณ์สำหรับจุดที่เลือก")
-                st.image(cv2.cvtColor(image, cv2.COLOR_BGR2RGB), use_column_width=True)
+                st.image(cv2.cvtColor(image, cv2.COLOR_BGR2RGB), use_container_width=True)
         else:
             st.error(f"โมเดล ตรวจจับได้เพียง {len(keypoints)} จุด ไม่ครอบคลุม Index P{max_required_idx}")
-            st.image(cv2.cvtColor(image, cv2.COLOR_BGR2RGB), use_column_width=True)
+            st.image(cv2.cvtColor(image, cv2.COLOR_BGR2RGB), use_container_width=True)
     else:
         st.warning("ไม่พบวัตถุหรือ Keypoints ในรูปภาพนี้ กรุณาปรับค่า Confidence Threshold ที่ Sidebar")
-        st.image(cv2.cvtColor(image, cv2.COLOR_BGR2RGB), use_column_width=True)
+        st.image(cv2.cvtColor(image, cv2.COLOR_BGR2RGB), use_container_width=True)
 else:
     st.info("👈 กรุณาอัปโหลดรูปภาพผ่านทาง Sidebar ด้านซ้ายมือเพื่อเริ่มต้น")
